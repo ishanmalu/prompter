@@ -52,7 +52,27 @@ python3 -m http.server 8080
 
 `http://localhost:8080` is a secure context, so the camera works there too.
 
+## On a phone or tablet
+
+The layout switches to camera-first: the video fills the screen and the controls
+live in a bottom sheet you pull up from the menu button.
+
+- **Tap the video** to start/stop scrolling
+- **Drag the video** up or down to find your place
+- **Swipe the sheet header down** to dismiss it
+- Front/back camera swap and fullscreen sit in the button row
+- The screen is kept awake while the camera is live
+- Recording auto-closes the sheet so the panel is never in the shot
+- Takes go through the **share sheet**, which is the only route to Photos or
+  Files on iOS — a plain download link dead-ends there
+
+Sizing uses `dvh`, so the band stays put when mobile browser chrome slides
+away, and safe-area insets keep the HUD clear of the home indicator and notch.
+
 ## Keyboard
+
+Desktop only — the shortcut list is hidden on touch layouts.
+
 
 | Key | Action |
 |---|---|
@@ -69,7 +89,10 @@ python3 -m http.server 8080
 - **Voice follow is Chrome-only** and sends audio to Google for recognition, so
   it needs an internet connection. Manual mode works fully offline.
 - **iOS Safari** has no `webkitSpeechRecognition`, and `MediaRecorder` there is
-  unreliable. Treat the phone as a viewing device, not a recording one.
+  unreliable. The app detects this and says so in the Camera tab. Use it as a
+  prompter and film with the Camera app, or record from desktop Chrome.
+- **Android Chrome** is the good mobile story: recording and voice follow both
+  work, and the rear camera is reachable from the swap button.
 - **No manual focus/exposure.** The browser doesn't expose them meaningfully.
   If you want real camera control, film on the phone and use this as the
   prompter only.
