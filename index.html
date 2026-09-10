@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prompter</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<style>
+:root{
+  --bg:#0b0b0d; --panel:#131317; --panel-2:#1b1b21; --line:#2a2a33;
+  --fg:#e9e9ee; --muted:#8b8b98; --accent:#5b8cff; --rec:#ff4a4a; --ok:#3ddc84;
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+  overflow:hidden;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{
+  background:var(--panel-2); border:1px solid var(--line); color:var(--fg);
+  padding:7px 12px; border-radius:8px; cursor:pointer; white-space:nowrap;
+}
+button:hover{background:#25252d}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{filter:brightness(1.1)}
+button.rec{background:var(--rec);border-color:var(--rec);color:#fff}
+button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+input[type=text],textarea,select{
+  background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%;
+}
+textarea{resize:none}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
+.row{display:flex;gap:8px;align-items:center}
+.grow{flex:1;min-width:0}
+
+/* ---------- layout ---------- */
+#app{display:grid;grid-template-columns:340px 1fr;height:100vh;height:100dvh}
+#side{
+  background:var(--panel); border-right:1px solid var(--line);
+  display:flex; flex-direction:column; min-height:0;
+}
+#side.hidden{display:none}
+#app.solo{grid-template-columns:1fr}
+.sidehead{padding:12px;border-bottom:1px solid var(--line)}
+.sidehead h1{margin:0 0 2px;font-size:15px;letter-spacing:.02em}
+.sidehead p{margin:0;font-size:11px;color:var(--muted)}
+.tabs{display:flex;border-bottom:1px solid var(--line)}
+.tabs button{
+  flex:1;border:0;border-radius:0;background:transparent;color:var(--muted);
+  padding:9px 0;font-size:12px;border-bottom:2px solid transparent;
+}
+.tabs button.sel{color:var(--fg);border-bottom-color:var(--accent)}
+.pane{flex:1;overflow-y:auto;padding:12px;display:none;min-height:0}
+.pane.sel{display:block}
+.field{margin-bottom:12px}
+
+/* ---------- stage ---------- */
+#stage{position:relative;background:#000;overflow:hidden}
+#cam{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;
+}
+#cam.flip{transform:scaleX(-1)}
+#noCam{
+  position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;
+  align-items:center;justify-content:center;color:var(--muted);text-align:center;padding:24px;
+}
+#noCam.hide{display:none}
+
+/* teleprompter band */
+#band{
+  position:absolute;left:0;right:0;top:0;
+  overflow:hidden; pointer-events:none;
+  --pad: 8vw;
+}
+#band::before,#band::after{
+  content:"";position:absolute;left:0;right:0;height:14%;z-index:2;pointer-events:none;
+}
+#band::before{top:0;background:linear-gradient(to bottom,rgba(0,0,0,.85),transparent)}
+#band::after{bottom:0;background:linear-gradient(to top,rgba(0,0,0,.85),transparent)}
+#bandbg{position:absolute;inset:0;background:rgba(0,0,0,.45)}
+#scroller{
+  position:absolute;left:var(--pad);right:var(--pad);top:0;
+  will-change:transform;
+}
+#script{
+  font-weight:600; letter-spacing:.005em;
+  text-shadow:0 2px 12px rgba(0,0,0,.9);
+  white-space:pre-wrap; word-wrap:break-word;
+}
+#script .w{transition:color .12s,opacity .12s}
+#script .done{color:var(--muted);opacity:.55}
+#script .now{color:#ffe680}
+#band.mirror #scroller{transform-origin:center}
+#band.mirror{transform:scaleX(-1)}
+#readline{
+  position:absolute;left:0;right:0;height:2px;background:rgba(91,140,255,.55);
+  z-index:3;pointer-events:none;display:none;
+}
+#readline.show{display:block}
+
+/* HUD */
+#hud{
+  position:absolute;left:0;right:0;bottom:0;z-index:5;
+  padding:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+  background:linear-gradient(to top,rgba(0,0,0,.8),transparent);
+}
+#hud .spacer{flex:1}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;
+  background:rgba(0,0,0,.55);border:1px solid var(--line);
+  padding:5px 10px;border-radius:999px;font-size:12px;font-variant-numeric:tabular-nums;
+}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--rec)}
+.dot.blink{animation:bl 1s steps(2,end) infinite}
+@keyframes bl{50%{opacity:0}}
+#toast{
+  position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:9;
+  background:rgba(0,0,0,.8);border:1px solid var(--line);padding:8px 14px;border-radius:999px;
+  font-size:12px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:80%;text-align:center;
+}
+#toast.show{opacity:1}
+
+/* lists */
+.item{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:10px;margin-bottom:8px;
+}
+.item .t{font-weight:600;font-size:13px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .m{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.item .acts{display:flex;gap:6px;margin-top:8px}
+.item button{padding:4px 9px;font-size:12px}
+.empty{color:var(--muted);font-size:12px;text-align:center;padding:24px 8px}
+.range{display:flex;align-items:center;gap:8px}
+.range input[type=range]{flex:1;accent-color:var(--accent)}
+.range .v{font-size:11px;color:var(--muted);width:44px;text-align:right;font-variant-numeric:tabular-nums}
+.warn{
+  background:#3a2a12;border:1px solid #6a4a1e;color:#ffd9a0;
+  padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px;
+}
+.warn code{background:rgba(0,0,0,.35);padding:1px 5px;border-radius:4px}
+kbd{
+  background:var(--panel-2);border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:5px;padding:1px 5px;font-size:11px;font-family:inherit;
+}
+.hint{font-size:11px;color:var(--muted);margin-top:6px}
+@media (max-width:820px){
+  #app{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  #side{border-right:0;border-bottom:1px solid var(--line);max-height:42vh}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <div class="sidehead">
+      <h1>Prompter</h1>
+      <p id="ctxnote">—</p>
+    </div>
+    <div class="tabs">
+      <button data-tab="script" class="sel">Script</button>
+      <button data-tab="look">Prompter</button>
+      <button data-tab="cam">Camera</button>
+      <button data-tab="takes">Takes</button>
+    </div>
+
+    <div class="pane sel" id="pane-script">
+      <div class="field">
+        <label>Title</label>
+        <input type="text" id="title" placeholder="Untitled script">
+      </div>
+      <div class="field">
+        <label>Script <span id="wc"></span></label>
+        <textarea id="text" rows="14" placeholder="Paste or type your script here…"></textarea>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <button class="primary grow" id="save">Save</button>
+        <button id="new">New</button>
+      </div>
+      <label>Saved</label>
+      <div id="scripts"></div>
+    </div>
+
+    <div class="pane" id="pane-look">
+      <div class="field">
+        <label>Text size</label>
+        <div class="range"><input type="range" id="size" min="18" max="120" value="44"><span class="v" id="sizeV">44px</span></div>
+      </div>
+      <div class="field">
+        <label>Line height</label>
+        <div class="range"><input type="range" id="lh" min="100" max="220" value="140"><span class="v" id="lhV">1.40</span></div>
+      </div>
+      <div class="field">
+        <label>Band height (how much of the frame the text covers)</label>
+        <div class="range"><input type="range" id="bandh" min="15" max="100" value="42"><span class="v" id="bandhV">42%</span></div>
+        <div class="hint">Keep this small and near the top — the closer the text sits to the lens, the more you look like you're making eye contact.</div>
+      </div>
+      <div class="field">
+        <label>Side margins</label>
+        <div class="range"><input type="range" id="pad" min="0" max="30" value="8"><span class="v" id="padV">8%</span></div>
+      </div>
+      <div class="field">
+        <label>Backdrop opacity</label>
+        <div class="range"><input type="range" id="dim" min="0" max="90" value="45"><span class="v" id="dimV">45%</span></div>
+      </div>
+      <div class="field">
+        <label>Scroll speed (manual mode)</label>
+        <div class="range"><input type="range" id="speed" min="5" max="200" value="45"><span class="v" id="speedV">45</span></div>
+      </div>
+      <div class="field">
+        <label>Mode</label>
+        <div class="row">
+          <button class="grow on" id="mManual">Manual</button>
+          <button class="grow" id="mVoice">Voice&nbsp;follow</button>
+        </div>
+        <div class="hint" id="voiceNote"></div>
+      </div>
+      <div class="field">
+        <div class="row">
+          <button class="grow" id="mirror">Mirror text</button>
+          <button class="grow" id="flip">Mirror video</button>
+        </div>
+        <div class="hint">Mirror text for a beamsplitter glass rig. Mirror video only changes your preview — the recording is unaffected.</div>
+      </div>
+    </div>
+
+    <div class="pane" id="pane-cam">
+      <div id="httpWarn"></div>
+      <div class="field">
+        <label>Camera</label>
+        <select id="vdev"></select>
+      </div>
+      <div class="field">
+        <label>Microphone</label>
+        <select id="adev"></select>
+      </div>
+      <div class="field">
+        <label>Resolution</label>
+        <select id="res">
+          <option value="3840x2160">2160p (4K)</option>
+          <option value="1920x1080" selected>1080p</option>
+          <option value="1280x720">720p</option>
+          <option value="640x480">480p</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Frame rate</label>
+        <select id="fps">
+          <option value="24">24</option>
+          <option value="30" selected>30</option>
+          <option value="60">60</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Recording format</label>
+        <select id="fmt"></select>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <button class="primary grow" id="start">Start camera</button>
+        <button id="stopcam">Stop</button>
+      </div>
+      <div class="field">
+        <label>Countdown before record</label>
+        <select id="cd">
+          <option value="0">None</option>
+          <option value="3" selected>3 seconds</option>
+          <option value="5">5 seconds</option>
+          <option value="10">10 seconds</option>
+        </select>
+      </div>
+      <div id="camInfo" class="hint"></div>
+    </div>
+
+    <div class="pane" id="pane-takes">
+      <div class="hint" style="margin:0 0 12px">
+        Takes live in this browser tab only. Download the ones you want to keep — a reload clears them.
+      </div>
+      <div id="takes"></div>
+    </div>
+  </aside>
+
+  <main id="stage">
+    <video id="cam" playsinline muted autoplay></video>
+    <div id="noCam">
+      <div style="font-size:34px">🎬</div>
+      <div><strong>Camera is off</strong></div>
+      <div style="max-width:340px;font-size:12px">Open the <em>Camera</em> tab and hit <strong>Start camera</strong>. The prompter works without it too — handy if you're filming on a separate device.</div>
+    </div>
+
+    <div id="band">
+      <div id="bandbg"></div>
+      <div id="scroller"><div id="script"></div></div>
+    </div>
+    <div id="readline"></div>
+
+    <div id="hud">
+      <button class="primary" id="play">▶ Start</button>
+      <button id="rewind">↺ Top</button>
+      <button class="rec" id="rec">● Record</button>
+      <span class="pill" id="recPill" style="display:none"><span class="dot blink"></span><span id="recT">0:00</span></span>
+      <span class="spacer"></span>
+      <span class="pill" id="modePill">Manual</span>
+      <span class="pill" id="progPill">0%</span>
+      <button id="toggleSide">⇤ Hide panel</button>
+    </div>
+
+    <div id="toast"></div>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+/* ─────────────────────────── helpers ─────────────────────────── */
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b) => Math.min(b,Math.max(a,v));
+// Where in the band the "current" line sits, as a fraction of band height.
+// Everything (scroll offset, read line, voice targeting) keys off this one number.
+const READ_FRAC = 0.30;
+const readY = () => $("band").clientHeight * READ_FRAC;
+const fmtTime = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+const fmtSize = b => b > 1e9 ? (b/1e9).toFixed(2)+" GB" : (b/1e6).toFixed(1)+" MB";
+
+let toastT;
+function toast(msg, ms=2600){
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove("show"), ms);
+}
+
+/* ─────────────────────── secure-context check ─────────────────── */
+// getUserMedia requires a secure context. localhost is treated as secure;
+// a bare http:// tailnet IP is NOT, which is the whole reason for `tailscale serve`.
+const SECURE = window.isSecureContext;
+(function contextBanner(){
+  const host = location.hostname;
+  const note = $("ctxnote");
+  if (SECURE){
+    note.textContent = host.endsWith(".ts.net") ? "over tailnet · secure ✓" : host + " · secure ✓";
+    note.style.color = "var(--ok)";
+  } else {
+    note.textContent = "insecure origin — camera blocked";
+    note.style.color = "var(--rec)";
+    $("httpWarn").innerHTML =
+      `<div class="warn"><strong>Chrome will not grant camera access here.</strong><br>
+       This page is on <code>http://${host}</code>, which isn't a secure context.
+       Serve it over your tailnet with TLS instead:<br><br>
+       <code>tailscale serve --bg 8080</code><br><br>
+       then open the <code>https://&lt;machine&gt;.ts.net</code> URL it prints.</div>`;
+  }
+})();
+
+/* ─────────────────────────── state ───────────────────────────── */
+const S = {
+  size:44, lh:1.4, bandh:42, pad:8, dim:45, speed:45,
+  mirror:false, flip:true, mode:"manual",
+  playing:false, offset:0, target:0, max:0, lastTs:0,
+  words:[], wordEls:[], cursor:0,
+  stream:null, recorder:null, chunks:[], recStart:0, recTimer:null,
+  currentId:null, takeSeq:0,
+};
+
+/* ─────────────────────── persistence (localStorage) ──────────── */
+const LS_SCRIPTS = "prompter.scripts.v1";
+const LS_PREFS   = "prompter.prefs.v1";
+
+function loadScripts(){
+  try { return JSON.parse(localStorage.getItem(LS_SCRIPTS) || "[]"); }
+  catch { return []; }
+}
+function saveScripts(list){
+  try { localStorage.setItem(LS_SCRIPTS, JSON.stringify(list)); }
+  catch { toast("Couldn't save — storage is full or blocked."); }
+}
+function savePrefs(){
+  const p = {size:S.size,lh:S.lh,bandh:S.bandh,pad:S.pad,dim:S.dim,speed:S.speed,
+             mirror:S.mirror,flip:S.flip,mode:S.mode,
+             res:$("res").value,fps:$("fps").value,cd:$("cd").value};
+  try { localStorage.setItem(LS_PREFS, JSON.stringify(p)); } catch {}
+}
+function loadPrefs(){
+  let p; try { p = JSON.parse(localStorage.getItem(LS_PREFS)||"null"); } catch { return; }
+  if (!p) return;
+  for (const k of ["size","lh","bandh","pad","dim","speed","mirror","flip","mode"])
+    if (p[k] !== undefined) S[k] = p[k];
+  if (p.res) $("res").value = p.res;
+  if (p.fps) $("fps").value = p.fps;
+  if (p.cd)  $("cd").value  = p.cd;
+}
+
+/* ─────────────────────────── tabs ────────────────────────────── */
+document.querySelectorAll(".tabs button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("sel", x === b));
+    document.querySelectorAll(".pane").forEach(p =>
+      p.classList.toggle("sel", p.id === "pane-" + b.dataset.tab));
+  };
+});
+$("toggleSide").onclick = () => {
+  const hidden = $("side").classList.toggle("hidden");
+  $("app").classList.toggle("solo", hidden);
+  $("toggleSide").textContent = hidden ? "⇥ Show panel" : "⇤ Hide panel";
+  setTimeout(measure, 60);
+};
+
+/* ─────────────────────── script rendering ────────────────────── */
+// Each word gets its own span so voice-follow can highlight and scroll to it.
+function renderScript(){
+  const raw = $("text").value;
+  const el = $("script");
+  el.textContent = "";
+  S.words = []; S.wordEls = []; S.cursor = 0;
+
+  // Split preserving whitespace so paragraph breaks survive.
+  const parts = raw.split(/(\s+)/);
+  const frag = document.createDocumentFragment();
+  for (const part of parts){
+    if (!part) continue;
+    if (/^\s+$/.test(part)) { frag.appendChild(document.createTextNode(part)); continue; }
+    const span = document.createElement("span");
+    span.className = "w";
+    span.textContent = part;
+    frag.appendChild(span);
+    S.wordEls.push(span);
+    S.words.push(normWord(part));
+  }
+  el.appendChild(frag);
+
+  const n = S.words.length;
+  $("wc").textContent = n ? `· ${n} words · ~${fmtTime(n/150*60)} at 150 wpm` : "";
+  measure();
+  paintProgress();
+}
+
+const normWord = w => w.toLowerCase().replace(/[^a-z0-9']/g, "");
+
+function measure(){
+  const band = $("band");
+  band.style.height = S.bandh + "vh";
+  band.style.setProperty("--pad", S.pad + "%");
+  $("bandbg").style.background = `rgba(0,0,0,${S.dim/100})`;
+  const sc = $("script");
+  sc.style.fontSize = S.size + "px";
+  sc.style.lineHeight = S.lh;
+  band.classList.toggle("mirror", S.mirror);
+  $("cam").classList.toggle("flip", S.flip);
+
+  // Scroll range: start with text just below the band, end with it just above.
+  const bandH = band.clientHeight;
+  const textH = sc.scrollHeight;
+  S.max = Math.max(0, textH + bandH * 0.5);
+  S.offset = clamp(S.offset, 0, S.max);
+  S.target = clamp(S.target, 0, S.max);
+  applyOffset();
+}
+
+function applyOffset(){
+  // Text begins READ_FRAC down the band so the current line sits near the lens.
+  $("scroller").style.transform = `translateY(${readY() - S.offset}px)`;
+  const pct = S.max > 0 ? clamp(S.offset / S.max * 100, 0, 100) : 0;
+  $("progPill").textContent = Math.round(pct) + "%";
+}
+
+/* ─────────────────────── manual scrolling loop ───────────────── */
+function tick(ts){
+  if (!S.playing) return;
+  if (!S.lastTs) S.lastTs = ts;
+  // Background tabs suspend rAF. Without a clamp, the first frame back carries
+  // the whole away-time as dt and hurls the script forward.
+  const dt = Math.min((ts - S.lastTs) / 1000, 0.1);
+  S.lastTs = ts;
+
+  if (S.mode === "manual"){
+    S.offset += S.speed * dt;
+    if (S.offset >= S.max){ S.offset = S.max; pause(); toast("End of script"); }
+    applyOffset();
+  } else {
+    // Voice mode: speech results arrive in bursts, so glide toward the target
+    // every frame instead of only when one lands. Framerate-independent ease.
+    const gap = S.target - S.offset;
+    if (Math.abs(gap) > 0.5){
+      S.offset += gap * (1 - Math.pow(0.001, dt));   // ~63% of the way in 100ms
+      applyOffset();
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+function play(){
+  if (!S.words.length){ toast("Nothing to read — add a script first."); return; }
+  S.playing = true; S.lastTs = 0;
+  $("play").textContent = "❚❚ Pause";
+  if (S.mode === "voice") startVoice();
+  requestAnimationFrame(tick);
+}
+function pause(){
+  S.playing = false;
+  $("play").textContent = "▶ Start";
+  stopVoice();
+}
+function togglePlay(){ S.playing ? pause() : play(); }
+
+$("play").onclick = togglePlay;
+$("rewind").onclick = () => {
+  pause(); S.offset = 0; S.target = 0; S.cursor = 0;
+  S.wordEls.forEach(e => e.className = "w");
+  applyOffset(); paintProgress();
+};
+
+/* ─────────────────────── voice following ─────────────────────── */
+// Chrome ships webkitSpeechRecognition. We take the running transcript and
+// walk it forward against the script, allowing skipped/ad-libbed words within
+// a lookahead window. Then we scroll so the matched word sits on the read line.
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null, voiceWantsOn = false;
+
+(function voiceSupport(){
+  const n = $("voiceNote");
+  if (!SR){
+    n.textContent = "Voice follow needs Chrome's speech recognition — not available in this browser.";
+    $("mVoice").disabled = true;
+  } else {
+    n.textContent = "Voice follow listens to you and advances the script to match. Chrome sends audio to Google for recognition, so it needs an internet connection.";
+  }
+})();
+
+function setMode(m){
+  S.mode = m;
+  $("mManual").classList.toggle("on", m === "manual");
+  $("mVoice").classList.toggle("on", m === "voice");
+  $("modePill").textContent = m === "manual" ? "Manual" : "Voice follow";
+  $("readline").classList.toggle("show", m === "voice");
+  if (m === "voice" && S.playing) startVoice(); else stopVoice();
+  savePrefs();
+}
+$("mManual").onclick = () => setMode("manual");
+$("mVoice").onclick  = () => setMode("voice");
+
+function startVoice(){
+  if (!SR || recog) return;
+  voiceWantsOn = true;
+  recog = new SR();
+  recog.continuous = true;
+  recog.interimResults = true;
+  recog.lang = "en-US";
+
+  recog.onresult = e => {
+    // Only the newest result matters; earlier ones are already consumed.
+    let heard = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) heard += e.results[i][0].transcript + " ";
+    const spoken = heard.toLowerCase().split(/\s+/).map(normWord).filter(Boolean);
+    if (spoken.length) advanceTo(spoken);
+  };
+  recog.onerror = e => {
+    if (e.error === "not-allowed"){ toast("Microphone denied — voice follow needs mic access."); voiceWantsOn = false; }
+    else if (e.error === "network"){ toast("Speech recognition needs an internet connection."); }
+  };
+  recog.onend = () => {
+    // Chrome stops on its own after a silence; restart while we still want it.
+    recog = null;
+    if (voiceWantsOn && S.playing && S.mode === "voice") startVoice();
+  };
+  try { recog.start(); } catch { recog = null; }
+}
+
+function stopVoice(){
+  voiceWantsOn = false;
+  if (recog){ try { recog.onend = null; recog.stop(); } catch {} recog = null; }
+}
+
+const LOOKAHEAD = 14;   // how far ahead of the cursor we'll hunt for a match
+const MIN_LEN   = 2;    // ignore very short words; too many false matches
+
+function advanceTo(spoken){
+  // Walk the tail of what was heard, matching each word forward in the script.
+  let cur = S.cursor;
+  for (const sw of spoken.slice(-12)){
+    if (sw.length < MIN_LEN) continue;
+    const end = Math.min(S.words.length, cur + LOOKAHEAD);
+    for (let i = cur; i < end; i++){
+      if (S.words[i] === sw){ cur = i + 1; break; }
+    }
+  }
+  if (cur > S.cursor){ S.cursor = cur; paintProgress(); scrollToCursor(); }
+}
+
+function paintProgress(){
+  for (let i = 0; i < S.wordEls.length; i++){
+    const e = S.wordEls[i];
+    const cls = i < S.cursor - 1 ? "w done" : i === S.cursor - 1 ? "w now" : "w";
+    if (e.className !== cls) e.className = cls;
+  }
+  const pct = S.words.length ? S.cursor / S.words.length * 100 : 0;
+  if (S.mode === "voice") $("progPill").textContent = Math.round(pct) + "%";
+}
+
+function scrollToCursor(){
+  const el = S.wordEls[Math.max(0, S.cursor - 1)];
+  if (!el) return;
+  // applyOffset() draws the text at (READ_Y - offset), so setting offset to the
+  // word's own offsetTop puts exactly that word on the read line.
+  S.target = clamp(el.offsetTop, 0, S.max);
+  // A big jump means we lost the thread and re-found it further along — snap
+  // rather than gliding, or the text crawls while the speaker is already ahead.
+  if (Math.abs(S.target - S.offset) > $("band").clientHeight){
+    S.offset = S.target;
+    applyOffset();
+  }
+  // Otherwise tick() eases us there.
+  if (!S.playing) applyOffset();
+}
+
+// Keep the read line drawn at the same spot the scroller aims for.
+function placeReadline(){
+  const band = $("band");
+  $("readline").style.top = (band.offsetTop + readY()) + "px";
+}
+
+/* ─────────────────────────── camera ──────────────────────────── */
+async function listDevices(){
+  let devs = [];
+  try { devs = await navigator.mediaDevices.enumerateDevices(); } catch { return; }
+  const v = $("vdev"), a = $("adev");
+  const keepV = v.value, keepA = a.value;
+  v.innerHTML = ""; a.innerHTML = "";
+  let vi = 0, ai = 0;
+  for (const d of devs){
+    if (d.kind === "videoinput"){
+      const o = new Option(d.label || `Camera ${++vi}`, d.deviceId); v.add(o);
+    } else if (d.kind === "audioinput"){
+      const o = new Option(d.label || `Mic ${++ai}`, d.deviceId); a.add(o);
+    }
+  }
+  if (!v.options.length) v.add(new Option("No camera found",""));
+  if (!a.options.length) a.add(new Option("No microphone found",""));
+  if (keepV) v.value = keepV;
+  if (keepA) a.value = keepA;
+}
+
+async function startCam(){
+  if (!SECURE){
+    toast("Camera blocked: this page isn't on a secure origin. See the Camera tab.");
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia){
+    toast("This browser doesn't expose getUserMedia.");
+    return;
+  }
+  stopCam();
+  const [w,h] = $("res").value.split("x").map(Number);
+  const fps = Number($("fps").value);
+  const vid = $("vdev").value;
+  const aud = $("adev").value;
+
+  const constraints = {
+    video: {
+      width:  { ideal: w },
+      height: { ideal: h },
+      frameRate: { ideal: fps },
+      ...(vid ? { deviceId: { exact: vid } } : { facingMode: "user" }),
+    },
+    audio: {
+      echoCancellation: false,   // we're recording, not conferencing
+      noiseSuppression: false,
+      autoGainControl: false,
+      ...(aud ? { deviceId: { exact: aud } } : {}),
+    },
+  };
+
+  try {
+    S.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (err){
+    // Retry once without the exact device — a stale deviceId is the usual cause.
+    if (err.name === "OverconstrainedError" || err.name === "NotFoundError"){
+      try { S.stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:w},height:{ideal:h}},audio:true}); }
+      catch (e2){ toast("Camera failed: " + e2.name); return; }
+    } else if (err.name === "NotAllowedError"){
+      toast("Camera permission denied. Allow it in Chrome's site settings and retry.");
+      return;
+    } else {
+      toast("Camera failed: " + err.name + " — " + err.message);
+      return;
+    }
+  }
+
+  $("cam").srcObject = S.stream;
+  $("noCam").classList.add("hide");
+  await listDevices();          // labels only populate after permission is granted
+  showCamInfo();
+  toast("Camera live");
+}
+
+function showCamInfo(){
+  const t = S.stream?.getVideoTracks()[0];
+  if (!t){ $("camInfo").textContent = ""; return; }
+  const s = t.getSettings();
+  $("camInfo").textContent =
+    `Live: ${s.width}×${s.height} @ ${Math.round(s.frameRate||0)}fps · ${t.label}`;
+}
+
+function stopCam(){
+  if (S.recorder && S.recorder.state !== "inactive") stopRec();
+  if (S.stream){ S.stream.getTracks().forEach(t => t.stop()); S.stream = null; }
+  $("cam").srcObject = null;
+  $("noCam").classList.remove("hide");
+  $("camInfo").textContent = "";
+}
+
+$("start").onclick = startCam;
+$("stopcam").onclick = () => { stopCam(); toast("Camera stopped"); };
+navigator.mediaDevices?.addEventListener?.("devicechange", listDevices);
+
+/* ─────────────────────────── recording ───────────────────────── */
+// Prefer MP4 where Chrome offers it — far fewer downstream headaches than WebM.
+const CANDIDATES = [
+  ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "MP4 · H.264 + AAC"],
+  ["video/mp4",                              "MP4"],
+  ["video/webm;codecs=vp9,opus",             "WebM · VP9"],
+  ["video/webm;codecs=vp8,opus",             "WebM · VP8"],
+  ["video/webm",                             "WebM"],
+];
+(function fillFormats(){
+  const sel = $("fmt");
+  let any = false;
+  for (const [mime,label] of CANDIDATES){
+    if (window.MediaRecorder?.isTypeSupported?.(mime)){
+      sel.add(new Option(label, mime)); any = true;
+    }
+  }
+  if (!any) sel.add(new Option("MediaRecorder unavailable",""));
+})();
+
+async function startRec(){
+  if (!S.stream){ toast("Start the camera first."); return; }
+  const mime = $("fmt").value;
+  if (!mime){ toast("This browser can't record."); return; }
+
+  const cd = Number($("cd").value);
+  if (cd > 0){
+    for (let i = cd; i > 0; i--){ toast(String(i), 900); await new Promise(r => setTimeout(r, 1000)); }
+  }
+  if (!S.stream){ return; }   // camera stopped during the countdown
+
+  S.chunks = [];
+  try {
+    S.recorder = new MediaRecorder(S.stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  } catch (e){ toast("Recorder failed: " + e.message); return; }
+
+  S.recorder.ondataavailable = e => { if (e.data.size) S.chunks.push(e.data); };
+  S.recorder.onstop = () => {
+    const blob = new Blob(S.chunks, { type: mime });
+    S.chunks = [];
+    addTake(blob, mime);
+  };
+  S.recorder.start(1000);      // 1s timeslices keep memory bounded
+  S.recStart = Date.now();
+  $("rec").textContent = "■ Stop";
+  $("recPill").style.display = "";
+  S.recTimer = setInterval(() => {
+    $("recT").textContent = fmtTime((Date.now() - S.recStart) / 1000);
+  }, 250);
+
+  // Rolling the script with the record button is what you almost always want.
+  if (!S.playing) play();
+}
+
+function stopRec(){
+  if (S.recorder && S.recorder.state !== "inactive") S.recorder.stop();
+  S.recorder = null;
+  clearInterval(S.recTimer);
+  $("rec").textContent = "● Record";
+  $("recPill").style.display = "none";
+  $("recT").textContent = "0:00";
+  if (S.playing) pause();
+}
+
+$("rec").onclick = () => (S.recorder && S.recorder.state !== "inactive") ? stopRec() : startRec();
+
+/* ─────────────────────────── takes ───────────────────────────── */
+const takes = [];
+function addTake(blob, mime){
+  const ext = mime.includes("mp4") ? "mp4" : "webm";
+  const secs = (Date.now() - S.recStart) / 1000;
+  const name = ($("title").value.trim() || "take").replace(/[^\w\-]+/g, "-").toLowerCase();
+  const t = {
+    id: Date.now(),
+    file: `${name}-${String(++S.takeSeq).padStart(2,"0")}.${ext}`,
+    url: URL.createObjectURL(blob),
+    size: blob.size, secs, when: new Date(),
+  };
+  takes.unshift(t);
+  drawTakes();
+  toast(`Take saved · ${fmtTime(secs)} · ${fmtSize(blob.size)}`);
+}
+
+function drawTakes(){
+  const c = $("takes");
+  if (!takes.length){ c.innerHTML = `<div class="empty">No takes yet.</div>`; return; }
+  c.innerHTML = "";
+  for (const t of takes){
+    const d = document.createElement("div");
+    d.className = "item";
+    d.innerHTML =
+      `<div class="t">${t.file}</div>
+       <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)} · ${t.when.toLocaleTimeString()}</div>
+       <div class="acts">
+         <button data-a="dl">Download</button>
+         <button data-a="pv">Preview</button>
+         <button data-a="rm">Delete</button>
+       </div>`;
+    d.querySelector('[data-a=dl]').onclick = () => {
+      const a = document.createElement("a");
+      a.href = t.url; a.download = t.file; a.click();
+    };
+    d.querySelector('[data-a=pv]').onclick = () => window.open(t.url, "_blank");
+    d.querySelector('[data-a=rm]').onclick = () => {
+      URL.revokeObjectURL(t.url);
+      takes.splice(takes.indexOf(t), 1);
+      drawTakes();
+    };
+    c.appendChild(d);
+  }
+}
+
+/* ─────────────────────── script library ──────────────────────── */
+function drawScripts(){
+  const list = loadScripts();
+  const c = $("scripts");
+  if (!list.length){ c.innerHTML = `<div class="empty">Nothing saved yet.</div>`; return; }
+  c.innerHTML = "";
+  for (const s of list){
+    const d = document.createElement("div");
+    d.className = "item";
+    const words = s.text.trim().split(/\s+/).filter(Boolean).length;
+    d.innerHTML =
+      `<div class="t">${escapeHtml(s.title)}</div>
+       <div class="m">${words} words · ${new Date(s.at).toLocaleDateString()}</div>
+       <div class="acts"><button data-a="load">Load</button><button data-a="rm">Delete</button></div>`;
+    d.querySelector('[data-a=load]').onclick = () => {
+      $("title").value = s.title; $("text").value = s.text;
+      S.currentId = s.id; renderScript(); toast("Loaded");
+    };
+    d.querySelector('[data-a=rm]').onclick = () => {
+      saveScripts(loadScripts().filter(x => x.id !== s.id));
+      if (S.currentId === s.id) S.currentId = null;
+      drawScripts();
+    };
+    c.appendChild(d);
+  }
+}
+const escapeHtml = s => s.replace(/[&<>"']/g, m =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+
+$("save").onclick = () => {
+  const text = $("text").value;
+  if (!text.trim()){ toast("Nothing to save."); return; }
+  const title = $("title").value.trim() || "Untitled script";
+  const list = loadScripts();
+  const existing = S.currentId && list.find(x => x.id === S.currentId);
+  if (existing){ existing.title = title; existing.text = text; existing.at = Date.now(); }
+  else {
+    const s = { id: crypto.randomUUID(), title, text, at: Date.now() };
+    S.currentId = s.id; list.unshift(s);
+  }
+  saveScripts(list); drawScripts(); toast("Saved");
+};
+$("new").onclick = () => {
+  S.currentId = null; $("title").value = ""; $("text").value = "";
+  renderScript(); toast("New script");
+};
+
+/* ─────────────────────── control bindings ────────────────────── */
+function bindRange(id, key, fmt, after){
+  const el = $(id), out = $(id + "V");
+  el.value = key === "lh" ? S[key] * 100 : S[key];
+  const upd = () => {
+    const raw = Number(el.value);
+    S[key] = key === "lh" ? raw / 100 : raw;
+    out.textContent = fmt(S[key]);
+    (after || measure)();
+    savePrefs();
+  };
+  el.oninput = upd;
+  upd();
+}
+
+$("text").addEventListener("input", renderScript);
+$("mirror").onclick = () => { S.mirror = !S.mirror; $("mirror").classList.toggle("on", S.mirror); measure(); savePrefs(); };
+$("flip").onclick   = () => { S.flip   = !S.flip;   $("flip").classList.toggle("on", S.flip);     measure(); savePrefs(); };
+["res","fps","cd"].forEach(id => $(id).addEventListener("change", savePrefs));
+
+document.addEventListener("keydown", e => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  if (typing) return;
+  switch (e.key){
+    case " ":      e.preventDefault(); togglePlay(); break;
+    case "ArrowUp":   e.preventDefault(); S.offset = clamp(S.offset - 60, 0, S.max); applyOffset(); break;
+    case "ArrowDown": e.preventDefault(); S.offset = clamp(S.offset + 60, 0, S.max); applyOffset(); break;
+    case "ArrowLeft": e.preventDefault(); $("speed").value = S.speed = clamp(S.speed - 5, 5, 200); $("speedV").textContent = S.speed; savePrefs(); break;
+    case "ArrowRight":e.preventDefault(); $("speed").value = S.speed = clamp(S.speed + 5, 5, 200); $("speedV").textContent = S.speed; savePrefs(); break;
+    case "r": case "R": $("rec").click(); break;
+    case "Home": e.preventDefault(); $("rewind").click(); break;
+  }
+});
+
+$("stage").addEventListener("wheel", e => {
+  if (S.mode !== "manual") return;
+  e.preventDefault();
+  S.offset = clamp(S.offset + e.deltaY, 0, S.max);
+  applyOffset();
+}, { passive:false });
+
+window.addEventListener("resize", () => { measure(); placeReadline(); });
+document.addEventListener("visibilitychange", () => {
+  // Drop the stale timestamp so the first frame back measures from now.
+  if (!document.hidden) S.lastTs = 0;
+});
+window.addEventListener("beforeunload", e => {
+  if (takes.length){ e.preventDefault(); e.returnValue = ""; }
+});
+
+/* ─────────────────────────── boot ────────────────────────────── */
+loadPrefs();
+bindRange("size",  "size",  v => v + "px");
+bindRange("lh",    "lh",    v => v.toFixed(2));
+bindRange("bandh", "bandh", v => v + "%", () => { measure(); placeReadline(); });
+bindRange("pad",   "pad",   v => v + "%");
+bindRange("dim",   "dim",   v => v + "%");
+bindRange("speed", "speed", v => String(v), () => {});
+$("mirror").classList.toggle("on", S.mirror);
+$("flip").classList.toggle("on", S.flip);
+setMode(SR ? S.mode : "manual");
+
+$("text").value = `Welcome to Prompter.
+
+Paste your script in the panel on the left, then hit Start. Use the spacebar to pause and resume without touching the mouse, and the arrow keys to nudge the speed while you're rolling.
+
+Try voice follow: switch the mode over in the Prompter tab, start reading, and the script keeps pace with you instead of the other way around. Skip a word or ad-lib for a moment and it will find you again.
+
+Keep the band small and near the top of the frame. The closer the text sits to your camera lens, the more it looks like you are talking to whoever is watching, rather than reading past them.`;
+renderScript();
+drawScripts();
+drawTakes();
+placeReadline();
+listDevices();
+</script>
+</body>
+</html>
