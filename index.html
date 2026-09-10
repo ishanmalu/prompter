@@ -86,9 +86,14 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
 #cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
 #cam.flip{transform:scaleX(-1)}
 #noCam{
-  position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;
+  position:absolute;inset:0;z-index:5;      /* above #seek, or it can't be tapped */
+  display:flex;flex-direction:column;gap:12px;
   align-items:center;justify-content:center;color:var(--muted);text-align:center;
-  padding:24px; padding-bottom:120px;
+  padding:24px; padding-bottom:120px; cursor:pointer;
+}
+#noCam #bigStart{
+  background:var(--accent);border-color:var(--accent);color:#fff;
+  font-size:15px;font-weight:600;padding:13px 22px;min-height:var(--tap);
 }
 #noCam.hide{display:none}
 
@@ -355,6 +360,9 @@ kbd{
       <div class="field">
         <label>Recording format</label>
         <select id="fmt"></select>
+        <div class="hint">Keep this on MP4 if you can. iOS only offers
+          <em>Save Video</em> (straight into Photos) for MP4 — a WebM take can
+          only be filed away with <em>Save to Files</em>.</div>
       </div>
       <div class="row" style="margin-bottom:12px">
         <button class="primary grow" id="start">Start camera</button>
@@ -380,9 +388,7 @@ kbd{
     </div>
 
     <div class="pane" id="pane-takes">
-      <div class="hint" style="margin:0 0 12px">
-        Takes live in this browser tab only. Download the ones you want to keep — a reload clears them.
-      </div>
+      <div class="hint" style="margin:0 0 12px" id="takesHint"></div>
       <div id="takes"></div>
     </div>
   </aside>
@@ -391,8 +397,8 @@ kbd{
     <video id="cam" playsinline muted autoplay></video>
     <div id="noCam">
       <div style="font-size:34px">🎬</div>
-      <div><strong>Camera is off</strong></div>
-      <div style="max-width:340px;font-size:12px">Open the <em>Camera</em> tab and hit <strong>Start camera</strong>. The prompter works without it too — handy if you're filming on a separate device.</div>
+      <button id="bigStart">Start camera</button>
+      <div style="max-width:340px;font-size:12px">The prompter works without a camera too — handy if you're filming on a separate device.</div>
     </div>
 
     <div id="band">
@@ -407,6 +413,9 @@ kbd{
       <button class="primary" id="play"><span class="ico">▶</span><span class="lbl">&nbsp;Start</span></button>
       <button id="rewind"><span class="ico">↺</span><span class="lbl">&nbsp;Top</span></button>
       <button class="rec" id="rec"><span class="ico">●</span><span class="lbl">&nbsp;Record</span></button>
+      <button id="slower" aria-label="Slower"><span class="ico">−</span></button>
+      <span class="pill" id="spdPill">45</span>
+      <button id="faster" aria-label="Faster"><span class="ico">+</span></button>
       <button id="camswap" aria-label="Switch camera"><span class="ico">⇄</span></button>
       <button id="fs" aria-label="Fullscreen"><span class="ico">⛶</span></button>
       <span class="pill" id="recPill" style="display:none"><span class="dot blink"></span><span id="recT">0:00</span></span>
@@ -431,7 +440,10 @@ const clamp = (v,a,b) => Math.min(b,Math.max(a,v));
 const READ_FRAC = 0.30;
 const readY = () => $("band").clientHeight * READ_FRAC;
 const fmtTime = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
-const fmtSize = b => b > 1e9 ? (b/1e9).toFixed(2)+" GB" : (b/1e6).toFixed(1)+" MB";
+const fmtSize = b =>
+  b >= 1e9 ? (b/1e9).toFixed(2)+" GB" :
+  b >= 1e6 ? (b/1e6).toFixed(1)+" MB" :
+             Math.max(1, Math.round(b/1e3))+" KB";   // short takes aren't "0.0 MB"
 
 // Coarse pointer + no hover is the honest test for "phone or tablet".
 const TOUCH  = matchMedia("(pointer:coarse)").matches;
@@ -599,6 +611,7 @@ function renderScript(){
   const n = S.words.length;
   $("wc").textContent = n ? `· ${n} words · ~${fmtTime(n/150*60)} at 150 wpm` : "";
   measure();
+  if (typeof showSpeed === "function") showSpeed();   // wpm depends on word count
   paintProgress();
 }
 
@@ -680,7 +693,8 @@ $("rewind").onclick = () => {
 };
 
 /* ─────────────────────── voice following ─────────────────────── */
-// Chrome ships webkitSpeechRecognition. We take the running transcript and
+// Chrome and Safari 26+ both ship (webkit)SpeechRecognition. We take the
+// running transcript and
 // walk it forward against the script, allowing skipped/ad-libbed words within
 // a lookahead window. Then we scroll so the matched word sits on the read line.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -689,10 +703,10 @@ let recog = null, voiceWantsOn = false;
 (function voiceSupport(){
   const n = $("voiceNote");
   if (!SR){
-    n.textContent = "Voice follow needs Chrome's speech recognition — not available in this browser.";
+    n.textContent = "Voice follow needs the browser's speech recognition, which this one doesn't provide. Chrome and Safari 26+ both do.";
     $("mVoice").disabled = true;
   } else {
-    n.textContent = "Voice follow listens to you and advances the script to match. Chrome sends audio to Google for recognition, so it needs an internet connection.";
+    n.textContent = "Voice follow listens and advances the script to match you. Recognition is handled by the browser and may be sent to its vendor's servers, so it usually needs an internet connection.";
   }
 })();
 
@@ -857,7 +871,11 @@ async function startCam(){
     }
   }
 
-  $("cam").srcObject = S.stream;
+  const v = $("cam");
+  v.srcObject = S.stream;
+  // iOS Safari frequently ignores the autoplay attribute when srcObject is
+  // assigned late; without this the preview stays a black rectangle.
+  try { await v.play(); } catch {}
   $("noCam").classList.add("hide");
   // Selfie view is mirrored by convention; a rear camera must not be.
   if (TOUCH){ S.flip = (S.facing === "user"); $("flip").classList.toggle("on", S.flip); measure(); }
@@ -885,17 +903,54 @@ function stopCam(){
 }
 
 /* ─────────────── front/back swap, fullscreen, wake lock ───────── */
+/* ─────────── speed trim from the HUD, usable mid-take ─────────── */
+// Scroll speed is px/s internally, but nobody thinks in pixels. Words-per-minute
+// is the number a presenter actually has an instinct for.
+function approxWpm(){
+  if (!S.words.length || !S.max) return 0;
+  return Math.round(S.words.length / (S.max / S.speed) * 60);
+}
+function showSpeed(){
+  const wpm = approxWpm();
+  $("spdPill").textContent = wpm ? wpm + " wpm" : String(S.speed);
+  $("speedV").textContent  = wpm ? `${S.speed} · ~${wpm}wpm` : String(S.speed);
+}
+function nudgeSpeed(d){
+  S.speed = clamp(S.speed + d, 5, 200);
+  $("speed").value = S.speed;
+  showSpeed(); savePrefs();
+}
+$("slower").onclick = () => nudgeSpeed(-5);
+$("faster").onclick = () => nudgeSpeed(+5);
+
 $("camswap").onclick = async () => {
+  if (S.recorder && S.recorder.state !== "inactive"){
+    toast("Stop the recording before switching cameras.");
+    return;                       // swapping restarts the stream and kills the take
+  }
   S.facing = S.facing === "user" ? "environment" : "user";
+  // A select only accepts a value one of its options actually has.
+  if (!$("vdev").querySelector('option[value=""]'))
+    $("vdev").add(new Option("Automatic (front/back)", ""), 0);
   $("vdev").value = "";                       // let facingMode decide
   if (S.stream) await startCam();
   toast(S.facing === "user" ? "Front camera" : "Rear camera", 1200);
 };
 
+// Safari only exposes the webkit-prefixed API, and iPhone Safari has no
+// element fullscreen at all (only <video>), so the button is hidden there.
+const fsEl  = () => document.fullscreenElement || document.webkitFullscreenElement;
+const canFS = !!($("app").requestFullscreen || $("app").webkitRequestFullscreen);
+if (!canFS) $("fs").style.display = "none";
+
 $("fs").onclick = async () => {
+  const app = $("app");
   try {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await $("app").requestFullscreen({ navigationUI: "hide" });
+    if (fsEl()){
+      await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.());
+    } else {
+      await (app.requestFullscreen?.({ navigationUI:"hide" }) ?? app.webkitRequestFullscreen?.());
+    }
   } catch { toast("Fullscreen isn't available here."); }
   setTimeout(() => { measure(); placeReadline(); }, 300);
 };
@@ -912,6 +967,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 $("start").onclick = startCam;
+$("bigStart").onclick = e => { e.stopPropagation(); startCam(); };
 $("stopcam").onclick = () => { stopCam(); toast("Camera stopped"); };
 navigator.mediaDevices?.addEventListener?.("devicechange", listDevices);
 
@@ -954,18 +1010,26 @@ async function startRec(){
 
   S.chunks = [];
   try {
-    S.recorder = new MediaRecorder(S.stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+    // A flat bitrate starves 4K and wastes space at 480p; ~0.12 bits per pixel
+    // per frame tracks quality across the range.
+    const st = S.stream.getVideoTracks()[0]?.getSettings() ?? {};
+    const px = (st.width || 1920) * (st.height || 1080);
+    const rate = clamp(Math.round(px * (st.frameRate || 30) * 0.12), 2_000_000, 40_000_000);
+    S.recorder = new MediaRecorder(S.stream, { mimeType: mime, videoBitsPerSecond: rate });
   } catch (e){ toast("Recorder failed: " + e.message); return; }
 
   S.recorder.ondataavailable = e => { if (e.data.size) S.chunks.push(e.data); };
+  // onstop fires asynchronously, by which time S.recStart may already belong to
+  // the next take — so this take's start time is closed over, not read back.
+  const startedAt = Date.now();
   S.recorder.onstop = () => {
     const blob = new Blob(S.chunks, { type: mime });
     S.chunks = [];
-    addTake(blob, mime);
+    addTake(blob, mime, (Date.now() - startedAt) / 1000);
   };
   S.recorder.start(1000);      // 1s timeslices keep memory bounded
   if (isMobileLayout()) sheetOpen(false);   // get the panel out of the shot
-  S.recStart = Date.now();
+  S.recStart = startedAt;
   setBtn("rec", "■", "Stop");
   $("recPill").style.display = "";
   S.recTimer = setInterval(() => {
@@ -990,19 +1054,26 @@ $("rec").onclick = () => (S.recorder && S.recorder.state !== "inactive") ? stopR
 
 /* ─────────────────────────── takes ───────────────────────────── */
 const takes = [];
-function addTake(blob, mime){
+function addTake(blob, mime, secs){
   const ext = mime.includes("mp4") ? "mp4" : "webm";
-  const secs = (Date.now() - S.recStart) / 1000;
   const name = ($("title").value.trim() || "take").replace(/[^\w\-]+/g, "-").toLowerCase();
   const t = {
     id: Date.now(),
     file: `${name}-${String(++S.takeSeq).padStart(2,"0")}.${ext}`,
-    url: URL.createObjectURL(blob), mime,
+    url: URL.createObjectURL(blob), mime, blob,   // blob kept for the share sheet
     size: blob.size, secs, when: new Date(),
   };
   takes.unshift(t);
   drawTakes();
   toast(`Take saved · ${fmtTime(secs)} · ${fmtSize(blob.size)}`);
+}
+
+// "Download" on iOS opens the blob in a dead-end tab rather than saving, so
+// this is the desktop path and the fallback when sharing isn't offered.
+function saveViaLink(t){
+  const a = document.createElement("a");
+  a.href = t.url; a.download = t.file;
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 function drawTakes(){
@@ -1020,18 +1091,22 @@ function drawTakes(){
          <button data-a="pv">Preview</button>
          <button data-a="rm">Delete</button>
        </div>`;
-    d.querySelector('[data-a=dl]').onclick = async () => {
-      // On a phone, `download` often just opens the blob in a dead-end tab.
-      // The share sheet is the only route to Photos / Files there.
+    d.querySelector('[data-a=dl]').onclick = () => {
+      // Safari only honours navigator.share() while the user gesture is still
+      // live. Any await before the call (a fetch, a blob round-trip) spends it
+      // and the share is rejected with NotAllowedError — so the File has to be
+      // built synchronously from the blob we already kept.
       if ((TOUCH || isMobileLayout()) && navigator.canShare){
         try {
-          const f = new File([await fetch(t.url).then(r => r.blob())], t.file,
-                             { type: t.mime });
-          if (navigator.canShare({ files:[f] })){ await navigator.share({ files:[f] }); return; }
-        } catch (e){ if (e.name === "AbortError") return; }
+          const f = new File([t.blob], t.file, { type: t.mime });
+          if (navigator.canShare({ files:[f] })){
+            navigator.share({ files:[f], title: t.file })
+              .catch(e => { if (e.name !== "AbortError") saveViaLink(t); });
+            return;
+          }
+        } catch {}
       }
-      const a = document.createElement("a");
-      a.href = t.url; a.download = t.file; a.click();
+      saveViaLink(t);
     };
     d.querySelector('[data-a=pv]').onclick = () => window.open(t.url, "_blank");
     d.querySelector('[data-a=rm]').onclick = () => {
@@ -1080,7 +1155,10 @@ $("save").onclick = () => {
   const existing = S.currentId && list.find(x => x.id === S.currentId);
   if (existing){ existing.title = title; existing.text = text; existing.at = Date.now(); }
   else {
-    const s = { id: crypto.randomUUID(), title, text, at: Date.now() };
+    // randomUUID needs a secure context, which is exactly where this app may
+    // not be. Any unique string will do for a localStorage key.
+    const id = crypto.randomUUID?.() ?? `s${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const s = { id, title, text, at: Date.now() };
     S.currentId = s.id; list.unshift(s);
   }
   saveScripts(list); drawScripts(); toast("Saved");
@@ -1106,7 +1184,8 @@ function bindRange(id, key, fmt, after){
 }
 
 $("text").addEventListener("input", renderScript);
-$("mirror").onclick = () => { S.mirror = !S.mirror; $("mirror").classList.toggle("on", S.mirror); measure(); savePrefs(); };
+$("mirror").onclick = () => { S.mirror = !S.mirror; showSpeed();
+$("mirror").classList.toggle("on", S.mirror); measure(); savePrefs(); };
 $("flip").onclick   = () => { S.flip   = !S.flip;   $("flip").classList.toggle("on", S.flip);     measure(); savePrefs(); };
 ["res","fps","cd"].forEach(id => $(id).addEventListener("change", savePrefs));
 
@@ -1117,8 +1196,8 @@ document.addEventListener("keydown", e => {
     case " ":      e.preventDefault(); togglePlay(); break;
     case "ArrowUp":   e.preventDefault(); S.offset = clamp(S.offset - 60, 0, S.max); applyOffset(); break;
     case "ArrowDown": e.preventDefault(); S.offset = clamp(S.offset + 60, 0, S.max); applyOffset(); break;
-    case "ArrowLeft": e.preventDefault(); $("speed").value = S.speed = clamp(S.speed - 5, 5, 200); $("speedV").textContent = S.speed; savePrefs(); break;
-    case "ArrowRight":e.preventDefault(); $("speed").value = S.speed = clamp(S.speed + 5, 5, 200); $("speedV").textContent = S.speed; savePrefs(); break;
+    case "ArrowLeft": e.preventDefault(); nudgeSpeed(-5); break;
+    case "ArrowRight":e.preventDefault(); nudgeSpeed(+5); break;
     case "r": case "R": $("rec").click(); break;
     case "Home": e.preventDefault(); $("rewind").click(); break;
     case "Escape": sheetOpen(false); break;
@@ -1201,7 +1280,7 @@ bindRange("lh",    "lh",    v => v.toFixed(2));
 bindRange("bandh", "bandh", v => v + "%", () => { measure(); placeReadline(); });
 bindRange("pad",   "pad",   v => v + "%");
 bindRange("dim",   "dim",   v => v + "%");
-bindRange("speed", "speed", v => String(v), () => {});
+bindRange("speed", "speed", v => String(v), showSpeed);
 $("mirror").classList.toggle("on", S.mirror);
 $("flip").classList.toggle("on", S.flip);
 setMode(SR ? S.mode : "manual");
@@ -1221,6 +1300,12 @@ Try voice follow: switch the mode over in the Prompter tab, start reading, and t
 Keep the band small and near the top of the frame. The closer the text sits to your camera lens, the more it looks like you are talking to whoever is watching, rather than reading past them.`;
 renderScript();
 drawScripts();
+$("takesHint").innerHTML = (TOUCH || isMobileLayout())
+  ? `Takes live in this tab only — a reload clears them. <strong>Save / Share</strong>
+     opens the system share sheet: pick <em>Save Video</em> to put an MP4 straight
+     into Photos, or <em>Save to Files</em> for the Files app.`
+  : `Takes live in this tab only — a reload clears them. <strong>Download</strong>
+     saves to your browser's download folder.`;
 drawTakes();
 placeReadline();
 listDevices();

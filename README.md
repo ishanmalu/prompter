@@ -86,16 +86,29 @@ Desktop only — the shortcut list is hidden on touch layouts.
 
 - **Takes live in the tab.** They're object URLs in memory — download the ones
   you want before reloading. The page warns you on unload if any are pending.
-- **Voice follow is Chrome-only** and sends audio to Google for recognition, so
-  it needs an internet connection. Manual mode works fully offline.
-- **iOS Safari** has no `webkitSpeechRecognition`, and `MediaRecorder` there is
-  unreliable. The app detects this and says so in the Camera tab. Use it as a
-  prompter and film with the Camera app, or record from desktop Chrome.
-- **Android Chrome** is the good mobile story: recording and voice follow both
-  work, and the rear camera is reachable from the swap button.
+- **Voice follow needs browser speech recognition** — Chrome and Safari 26+
+  both have it, older Safari does not. Recognition is vendor-hosted, so it
+  generally needs a connection. Manual mode works fully offline.
+- **Record as MP4, not WebM.** iOS only offers *Save Video* (straight to Photos)
+  for MP4; a WebM take can only go to Files. MP4 is the default wherever the
+  browser supports it, which now includes Safari.
+- The app feature-detects everything and tells you in the Camera tab when a
+  browser is missing something, rather than failing silently.
 - **No manual focus/exposure.** The browser doesn't expose them meaningfully.
   If you want real camera control, film on the phone and use this as the
   prompter only.
+
+## Browser support
+
+Verified against Safari 26.6.2 (its own engine, not an emulation) and Chrome:
+
+| | Chrome | Safari 26 | iOS Safari |
+|---|---|---|---|
+| Record (MP4/H.264) | ✅ | ✅ | ✅ |
+| Voice follow | ✅ | ✅ | version-dependent |
+| Share to Photos / Files | — | ✅ | ✅ |
+| Wake lock | ✅ | ✅ | ✅ |
+| Element fullscreen | ✅ | ✅ (prefixed) | ✗ (button hidden) |
 
 ## Tip: get a good sensor
 
