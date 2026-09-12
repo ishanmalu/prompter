@@ -86,6 +86,8 @@ Desktop only — the shortcut list is hidden on touch layouts.
 
 - **Takes live in the tab.** They're object URLs in memory — download the ones
   you want before reloading. The page warns you on unload if any are pending.
+- **Voice follow has a language picker** (Prompter tab), defaulting to your
+  browser's locale. Recognition accuracy depends on the browser's engine.
 - **Voice follow needs browser speech recognition** — Chrome and Safari 26+
   both have it, older Safari does not. Recognition is vendor-hosted, so it
   generally needs a connection. Manual mode works fully offline.

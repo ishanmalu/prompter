@@ -313,6 +313,10 @@ kbd{
         <label>Scroll speed (manual mode)</label>
         <div class="range"><input type="range" id="speed" min="5" max="200" value="45"><span class="v" id="speedV">45</span></div>
       </div>
+      <div class="field" id="langField">
+        <label>Recognition language</label>
+        <select id="lang"></select>
+      </div>
       <div class="field">
         <label>Mode</label>
         <div class="row">
@@ -513,7 +517,7 @@ function saveScripts(list){
 function savePrefs(){
   const p = {size:S.size,lh:S.lh,bandh:S.bandh,pad:S.pad,dim:S.dim,speed:S.speed,
              mirror:S.mirror,flip:S.flip,mode:S.mode,
-             res:$("res").value,fps:$("fps").value,cd:$("cd").value};
+             res:$("res").value,fps:$("fps").value,cd:$("cd").value,lang:$("lang").value};
   try { localStorage.setItem(LS_PREFS, JSON.stringify(p)); } catch {}
 }
 function loadPrefs(){
@@ -524,6 +528,7 @@ function loadPrefs(){
   if (p.res) $("res").value = p.res;
   if (p.fps) $("fps").value = p.fps;
   if (p.cd)  $("cd").value  = p.cd;
+  if (p.lang) S.savedLang = p.lang;        // applied after the list is built
 }
 
 /* ─────────────────────────── tabs ────────────────────────────── */
@@ -615,7 +620,11 @@ function renderScript(){
   paintProgress();
 }
 
-const normWord = w => w.toLowerCase().replace(/[^a-z0-9']/g, "");
+// Strip punctuation but keep letters from every script — the old [^a-z0-9']
+// class erased Cyrillic, Greek, CJK and Devanagari entirely, which made voice
+// follow look broken rather than unsupported for those languages.
+const PUNCT = /[^\p{Letter}\p{Mark}\p{Number}']/gu;   // Mark keeps Indic vowel signs attached
+const normWord = w => w.toLowerCase().replace(PUNCT, "");
 
 function measure(){
   const band = $("band");
@@ -698,7 +707,7 @@ $("rewind").onclick = () => {
 // walk it forward against the script, allowing skipped/ad-libbed words within
 // a lookahead window. Then we scroll so the matched word sits on the read line.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recog = null, voiceWantsOn = false;
+let recog = null, voiceWantsOn = false, voiceFails = 0, voiceRestart = null;
 
 (function voiceSupport(){
   const n = $("voiceNote");
@@ -728,29 +737,48 @@ function startVoice(){
   recog = new SR();
   recog.continuous = true;
   recog.interimResults = true;
-  recog.lang = "en-US";
+  recog.lang = $("lang").value || navigator.language || "en-US";
 
   recog.onresult = e => {
     // Only the newest result matters; earlier ones are already consumed.
     let heard = "";
     for (let i = e.resultIndex; i < e.results.length; i++) heard += e.results[i][0].transcript + " ";
+    voiceFails = 0;                       // we're hearing things; back off resets
     const spoken = heard.toLowerCase().split(/\s+/).map(normWord).filter(Boolean);
     if (spoken.length) advanceTo(spoken);
   };
   recog.onerror = e => {
-    if (e.error === "not-allowed"){ toast("Microphone denied — voice follow needs mic access."); voiceWantsOn = false; }
-    else if (e.error === "network"){ toast("Speech recognition needs an internet connection."); }
+    // Fatal conditions must stop the loop outright. Without this, onend fires
+    // straight after the error and restarts into the same failure forever.
+    if (e.error === "not-allowed" || e.error === "service-not-allowed"){
+      toast("Microphone denied — voice follow needs mic access.");
+      voiceWantsOn = false; setMode("manual");
+    } else if (e.error === "audio-capture"){
+      toast("No microphone found for voice follow.");
+      voiceWantsOn = false; setMode("manual");
+    } else if (e.error === "network"){
+      voiceFails++;
+      toast("Speech recognition can't reach the network.");
+    }
+    // "no-speech" and "aborted" are normal; onend just restarts.
   };
   recog.onend = () => {
-    // Chrome stops on its own after a silence; restart while we still want it.
+    // The engine stops on its own after a silence, so a restart is expected —
+    // but back off when restarts keep failing rather than spinning the CPU.
     recog = null;
-    if (voiceWantsOn && S.playing && S.mode === "voice") startVoice();
+    if (!(voiceWantsOn && S.playing && S.mode === "voice")) return;
+    if (voiceFails >= 3){
+      toast("Voice follow gave up — switching to manual.");
+      voiceFails = 0; setMode("manual"); return;
+    }
+    voiceRestart = setTimeout(startVoice, voiceFails ? 1500 : 0);
   };
-  try { recog.start(); } catch { recog = null; }
+  try { recog.start(); } catch { recog = null; voiceFails++; }
 }
 
 function stopVoice(){
-  voiceWantsOn = false;
+  voiceWantsOn = false; voiceFails = 0;
+  clearTimeout(voiceRestart); voiceRestart = null;
   if (recog){ try { recog.onend = null; recog.stop(); } catch {} recog = null; }
 }
 
@@ -1184,14 +1212,21 @@ function bindRange(id, key, fmt, after){
 }
 
 $("text").addEventListener("input", renderScript);
-$("mirror").onclick = () => { S.mirror = !S.mirror; showSpeed();
-$("mirror").classList.toggle("on", S.mirror); measure(); savePrefs(); };
+$("mirror").onclick = () => {
+  S.mirror = !S.mirror;
+  $("mirror").classList.toggle("on", S.mirror);
+  measure(); savePrefs();
+};
 $("flip").onclick   = () => { S.flip   = !S.flip;   $("flip").classList.toggle("on", S.flip);     measure(); savePrefs(); };
 ["res","fps","cd"].forEach(id => $(id).addEventListener("change", savePrefs));
 
 document.addEventListener("keydown", e => {
-  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
-  if (typing) return;
+  // Cmd+R / Ctrl+R would otherwise start a recording as the page reloads.
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // A focused button already answers Space and Enter itself; handling it here
+  // too would both re-press that button and toggle playback.
+  const t = e.target;
+  if (/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(t.tagName) || t.isContentEditable) return;
   switch (e.key){
     case " ":      e.preventDefault(); togglePlay(); break;
     case "ArrowUp":   e.preventDefault(); S.offset = clamp(S.offset - 60, 0, S.max); applyOffset(); break;
@@ -1205,9 +1240,9 @@ document.addEventListener("keydown", e => {
 });
 
 $("stage").addEventListener("wheel", e => {
-  if (S.mode !== "manual") return;
   e.preventDefault();
   S.offset = clamp(S.offset + e.deltaY, 0, S.max);
+  S.target = S.offset;          // scrolling in voice mode is a correction too
   applyOffset();
 }, { passive:false });
 
@@ -1283,6 +1318,29 @@ bindRange("dim",   "dim",   v => v + "%");
 bindRange("speed", "speed", v => String(v), showSpeed);
 $("mirror").classList.toggle("on", S.mirror);
 $("flip").classList.toggle("on", S.flip);
+// Populate recognition languages, defaulting to the browser's own.
+(function fillLangs(){
+  const sel = $("lang");
+  const langs = [["en-US","English (US)"],["en-GB","English (UK)"],["en-AU","English (AU)"],
+    ["en-IN","English (India)"],["es-ES","Spanish"],["fr-FR","French"],["de-DE","German"],
+    ["it-IT","Italian"],["pt-BR","Portuguese (BR)"],["nl-NL","Dutch"],["sv-SE","Swedish"],
+    ["fi-FI","Finnish"],["pl-PL","Polish"],["tr-TR","Turkish"],["ru-RU","Russian"],
+    ["hi-IN","Hindi"],["ar-SA","Arabic"],["zh-CN","Chinese (Mandarin)"],
+    ["ja-JP","Japanese"],["ko-KR","Korean"]];
+  const mine = navigator.language || "en-US";
+  if (!langs.some(([c]) => c === mine)) langs.unshift([mine, mine + " (your browser)"]);
+  for (const [code,label] of langs) sel.add(new Option(label, code));
+  // Exact match first, else the first entry sharing a base language.
+  sel.value = S.savedLang ? S.savedLang
+            : langs.some(([c]) => c === mine) ? mine
+            : (langs.find(([c]) => c.split("-")[0] === mine.split("-")[0])?.[0] ?? "en-US");
+  sel.addEventListener("change", () => {
+    savePrefs();
+    if (S.mode === "voice" && S.playing){ stopVoice(); startVoice(); }  // re-arm on the new language
+  });
+  if (!SR) $("langField").style.display = "none";
+})();
+
 setMode(SR ? S.mode : "manual");
 
 $("text").value = (TOUCH || isMobileLayout()) ? `Welcome to Prompter.
