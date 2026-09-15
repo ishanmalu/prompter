@@ -172,6 +172,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
 }
 .item .t{font-weight:600;font-size:13px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item .m{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.item .m .unsaved{color:var(--rec);font-weight:600}
 .item .acts{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
 .item button{padding:7px 11px;font-size:12px;min-height:36px}
 .empty{color:var(--muted);font-size:12px;text-align:center;padding:24px 8px}
@@ -1080,20 +1081,97 @@ function stopRec(){
 
 $("rec").onclick = () => (S.recorder && S.recorder.state !== "inactive") ? stopRec() : startRec();
 
+/* ────────────────────── take storage (IndexedDB) ─────────────── */
+// Takes used to live only in this tab's memory, so a reload — or iOS evicting a
+// backgrounded tab mid-shoot — destroyed footage silently. Video blobs are far
+// too big for localStorage, but IndexedDB stores a Blob natively with no base64
+// round-trip, so a take survives a reload and the share sheet still gets a File
+// it can hand to Photos.
+const DB_NAME = "prompter", DB_STORE = "takes", DB_VER = 1;
+let dbPromise = null;
+
+function db(){
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((res, rej) => {
+    let req;
+    // Safari in private browsing throws on open() rather than failing the
+    // request, so the synchronous call needs its own guard.
+    try { req = indexedDB.open(DB_NAME, DB_VER); }
+    catch (e){ rej(e); return; }
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains(DB_STORE)) d.createObjectStore(DB_STORE, { keyPath:"id" });
+    };
+    req.onsuccess = () => res(req.result);
+    req.onerror   = () => rej(req.error);
+  });
+  // A failed open must not be cached, or every later write reuses the rejection.
+  dbPromise.catch(() => { dbPromise = null; });
+  return dbPromise;
+}
+
+function tx(mode, fn){
+  return db().then(d => new Promise((res, rej) => {
+    const t = d.transaction(DB_STORE, mode);
+    const req = fn(t.objectStore(DB_STORE));
+    t.oncomplete = () => res(req?.result);
+    t.onabort = t.onerror = () => rej(t.error ?? req?.error);
+  }));
+}
+
+// Only the fields worth keeping: the object URL is per-session and is rebuilt
+// on load, and `when` round-trips as a Date because structured clone keeps it.
+const toRecord = t =>
+  ({ id:t.id, file:t.file, mime:t.mime, size:t.size, secs:t.secs, when:t.when, blob:t.blob });
+
+async function persistTake(t){
+  try {
+    await tx("readwrite", s => s.put(toRecord(t)));
+    t.stored = true;
+  } catch (e){
+    t.stored = false;
+    toast(e?.name === "QuotaExceededError"
+      ? "Out of storage — this take is in memory only. Save it now."
+      : "Couldn't write this take to disk — it's in memory only. Save it now.", 5200);
+  }
+  drawTakes();
+}
+
+async function forgetTake(t){
+  try { await tx("readwrite", s => s.delete(t.id)); } catch {}
+}
+
+async function loadTakes(){
+  let rows;
+  try { rows = await tx("readonly", s => s.getAll()); }
+  catch { return; }                       // no IDB here; memory-only is still fine
+  if (!rows?.length) return;
+  rows.sort((a,b) => new Date(b.when) - new Date(a.when));
+  for (const r of rows){
+    takes.push({ ...r, when: new Date(r.when), url: URL.createObjectURL(r.blob), stored: true });
+  }
+  // Restore the numbering so a reload doesn't start writing take-01 over again.
+  S.takeSeq = Math.max(0, ...takes.map(t => Number(t.file.match(/-(\d+)\.\w+$/)?.[1]) || 0));
+  drawTakes();
+}
+
 /* ─────────────────────────── takes ───────────────────────────── */
 const takes = [];
 function addTake(blob, mime, secs){
   const ext = mime.includes("mp4") ? "mp4" : "webm";
   const name = ($("title").value.trim() || "take").replace(/[^\w\-]+/g, "-").toLowerCase();
   const t = {
-    id: Date.now(),
+    // Date.now() alone collides when two takes land in the same millisecond,
+    // which would make the second silently overwrite the first in the store.
+    id: `${Date.now()}-${S.takeSeq + 1}`,
     file: `${name}-${String(++S.takeSeq).padStart(2,"0")}.${ext}`,
     url: URL.createObjectURL(blob), mime, blob,   // blob kept for the share sheet
-    size: blob.size, secs, when: new Date(),
+    size: blob.size, secs, when: new Date(), stored: false,
   };
   takes.unshift(t);
   drawTakes();
   toast(`Take saved · ${fmtTime(secs)} · ${fmtSize(blob.size)}`);
+  persistTake(t);
 }
 
 // "Download" on iOS opens the blob in a dead-end tab rather than saving, so
@@ -1113,7 +1191,8 @@ function drawTakes(){
     d.className = "item";
     d.innerHTML =
       `<div class="t">${t.file}</div>
-       <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)} · ${t.when.toLocaleTimeString()}</div>
+       <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)} · ${t.when.toLocaleTimeString()}${
+         t.stored ? "" : ` · <span class="unsaved">in memory only</span>`}</div>
        <div class="acts">
          <button data-a="dl">${(TOUCH || isMobileLayout()) ? "Save / Share" : "Download"}</button>
          <button data-a="pv">Preview</button>
@@ -1140,6 +1219,7 @@ function drawTakes(){
     d.querySelector('[data-a=rm]').onclick = () => {
       URL.revokeObjectURL(t.url);
       takes.splice(takes.indexOf(t), 1);
+      forgetTake(t);
       drawTakes();
     };
     c.appendChild(d);
@@ -1289,7 +1369,12 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) S.lastTs = 0;
 });
 window.addEventListener("beforeunload", e => {
-  if (takes.length){ e.preventDefault(); e.returnValue = ""; }
+  // Takes now survive a reload, so the only losable footage is a take still
+  // recording or one that failed to reach IndexedDB. Prompting for every take
+  // on every reload would just train the habit of dismissing the dialog.
+  if (S.recorder?.state === "recording" || takes.some(t => !t.stored)){
+    e.preventDefault(); e.returnValue = "";
+  }
 });
 
 /* ─────────────────────────── boot ────────────────────────────── */
@@ -1359,12 +1444,18 @@ Keep the band small and near the top of the frame. The closer the text sits to y
 renderScript();
 drawScripts();
 $("takesHint").innerHTML = (TOUCH || isMobileLayout())
-  ? `Takes live in this tab only — a reload clears them. <strong>Save / Share</strong>
-     opens the system share sheet: pick <em>Save Video</em> to put an MP4 straight
-     into Photos, or <em>Save to Files</em> for the Files app.`
-  : `Takes live in this tab only — a reload clears them. <strong>Download</strong>
-     saves to your browser's download folder.`;
+  ? `Takes are kept in this browser and survive a reload, but they are not a
+     backup — export the ones you want. <strong>Save / Share</strong> opens the
+     system share sheet: pick <em>Save Video</em> to put an MP4 straight into
+     Photos, or <em>Save to Files</em> for the Files app.`
+  : `Takes are kept in this browser and survive a reload, but they are not a
+     backup — export the ones you want. <strong>Download</strong> saves to your
+     browser's download folder.`;
 drawTakes();
+loadTakes();
+// Without this, Safari and Chrome treat the origin as evictable and may clear
+// takes under storage pressure. It is a no-op where unsupported or refused.
+navigator.storage?.persist?.().catch(() => {});
 placeReadline();
 listDevices();
 </script>

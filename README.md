@@ -10,8 +10,11 @@ recorder captures the camera stream, not the screen.
 - Script library (saved in `localStorage`)
 - Manual scroll: spacebar to pause, arrows to nudge speed, scroll wheel to seek
 - **Voice follow** — reads along with you and keeps pace, so you can ad-lib and
-  pause without the text running away (Chrome only)
-- Records to MP4 where Chrome supports it, WebM otherwise
+  pause without the text running away (Chrome and Safari 26+)
+- Records to MP4 wherever the browser supports it, which now includes Safari
+  and iOS Safari; WebM otherwise
+- Takes are kept in IndexedDB, so a reload or a backgrounded tab doesn't
+  destroy footage
 - Camera/mic picker, up to 4K, 24/30/60fps, countdown
 - Mirror mode for beamsplitter glass rigs
 - Adjustable band height, so the text can sit right under the lens
@@ -65,6 +68,8 @@ live in a bottom sheet you pull up from the menu button.
 - Recording auto-closes the sheet so the panel is never in the shot
 - Takes go through the **share sheet**, which is the only route to Photos or
   Files on iOS — a plain download link dead-ends there
+- Takes survive a reload, and iOS dropping a backgrounded tab, because they are
+  written to IndexedDB as they finish
 
 Sizing uses `dvh`, so the band stays put when mobile browser chrome slides
 away, and safe-area insets keep the HUD clear of the home indicator and notch.
@@ -84,8 +89,14 @@ Desktop only — the shortcut list is hidden on touch layouts.
 
 ## Known limits
 
-- **Takes live in the tab.** They're object URLs in memory — download the ones
-  you want before reloading. The page warns you on unload if any are pending.
+- **Takes are stored, not backed up.** They go to IndexedDB under this origin,
+  so they survive a reload, but clearing site data removes them and Safari
+  evicts unused origins after about seven days. Export anything you want to
+  keep. A take that couldn't be written is flagged *in memory only* in the
+  list, and the page warns you on unload if one of those is outstanding or a
+  recording is still running.
+- **A take is written when it stops,** not while it rolls. If the tab is killed
+  mid-recording, that take is gone.
 - **Voice follow has a language picker** (Prompter tab), defaulting to your
   browser's locale. Recognition accuracy depends on the browser's engine.
 - **Voice follow needs browser speech recognition** — Chrome and Safari 26+
