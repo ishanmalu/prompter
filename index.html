@@ -499,7 +499,7 @@ const S = {
   mirror:false, flip:true, mode:"manual",
   playing:false, offset:0, target:0, max:0, lastTs:0,
   words:[], wordEls:[], cursor:0,
-  stream:null, recorder:null, chunks:[], recStart:0, recTimer:null,
+  stream:null, recorder:null, chunks:[], recStart:0, recTimer:null, arming:false,
   currentId:null, takeSeq:0, facing:"user", wake:null,
 };
 
@@ -988,8 +988,16 @@ $("fs").onclick = async () => {
 // phone decides to sleep. Hold a wake lock while the camera is live.
 async function requestWakeLock(){
   if (!("wakeLock" in navigator)) return;
-  try { S.wake = await navigator.wakeLock.request("screen"); }
-  catch {}
+  if (S.wake) return;                       // already holding one
+  try {
+    S.wake = await navigator.wakeLock.request("screen");
+    // Hiding the page releases the lock automatically, but the sentinel object
+    // stays put — so the visibilitychange check below, which tests `!S.wake`,
+    // would never ask for a new one and the screen would start sleeping
+    // mid-take after the first time you switched apps. Drop the reference the
+    // moment it releases so the next foreground actually re-arms it.
+    S.wake.addEventListener("release", () => { S.wake = null; });
+  } catch {}
 }
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && S.stream && !S.wake) requestWakeLock();   // locks drop on hide
@@ -1021,19 +1029,27 @@ const CANDIDATES = [
 })();
 
 async function startRec(){
+  // The countdown is a window in which S.recorder is still null, so the button's
+  // own "already recording?" test says no and a second tap starts a second
+  // countdown. Both recorders would then run on one stream and push into the
+  // same S.chunks, interleaving two takes into one unplayable file.
+  if (S.arming || (S.recorder && S.recorder.state !== "inactive")) return;
   if (!S.stream){ toast("Start the camera first."); return; }
   const mime = $("fmt").value;
   if (!mime){ toast("This browser can't record."); return; }
 
   const cd = Number($("cd").value);
   if (cd > 0){
-    const c = $("count"); c.classList.add("show");
-    for (let i = cd; i > 0; i--){
-      c.textContent = i;
-      await new Promise(r => setTimeout(r, 1000));
-      if (!S.stream){ c.classList.remove("show"); return; }   // cancelled mid-count
-    }
-    c.classList.remove("show");
+    S.arming = true;
+    try {
+      const c = $("count"); c.classList.add("show");
+      for (let i = cd; i > 0; i--){
+        c.textContent = i;
+        await new Promise(r => setTimeout(r, 1000));
+        if (!S.stream){ c.classList.remove("show"); return; }   // cancelled mid-count
+      }
+      c.classList.remove("show");
+    } finally { S.arming = false; }
   }
   if (!S.stream){ return; }   // camera stopped during the countdown
 
