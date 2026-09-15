@@ -47,6 +47,46 @@ To take it down:
 ./serve.sh --stop
 ```
 
+## Keeping it running
+
+`serve.sh` dies with the shell that started it. To have the file server come
+back at login instead:
+
+```bash
+./install-autostart.sh          # port 8080
+./install-autostart.sh 9000     # different port
+```
+
+That installs a launchd agent (`dev.ishanmalu.prompter`) with `KeepAlive`, so
+the server also restarts if it crashes. It binds `127.0.0.1` on purpose —
+`tailscale serve` is what puts it on the tailnet, and it has to, because
+`getUserMedia` refuses a plain-HTTP origin. Binding straight to the tailnet IP
+would hand you a page whose camera never starts.
+
+The `tailscale serve` config persists across reboots on its own, so it only
+needs setting up once:
+
+```bash
+tailscale serve --bg 8080
+```
+
+Undo the agent with `./uninstall-autostart.sh`, which leaves the serve config
+alone.
+
+### Running something else alongside it
+
+`tailscale serve` can host several apps on one machine, on separate HTTPS
+ports:
+
+```bash
+tailscale serve --bg 8080              # https://<machine>.ts.net/
+tailscale serve --bg --https=8443 5005 # https://<machine>.ts.net:8443/
+```
+
+Prefer ports over `--set-path`. A path mount only works if the app asks for its
+assets relatively; anything requesting `/static/…` or `/api/…` from the root
+escapes the mount and hits whatever owns `/`.
+
 ## Running it locally only
 
 ```bash
