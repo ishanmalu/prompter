@@ -338,9 +338,9 @@ kbd{
       <div class="field">
         <div class="row">
           <button class="grow" id="mirror">Mirror text</button>
-          <button class="grow" id="flip">Mirror video</button>
         </div>
-        <div class="hint">Mirror text for a beamsplitter glass rig. Mirror video only changes your preview — the recording is unaffected.</div>
+        <div class="hint">For a beamsplitter glass rig, which flips the text on its
+          way to the glass. Looking for the selfie flip? That lives under Camera.</div>
       </div>
     </div>
 
@@ -349,6 +349,17 @@ kbd{
       <div class="field">
         <label>Camera</label>
         <select id="vdev"></select>
+      </div>
+      <div class="field">
+        <label>Selfie mirror</label>
+        <div class="row">
+          <button class="grow" id="flip">Mirror preview</button>
+        </div>
+        <div class="hint">On by default for the front camera, so leaning left looks
+          like leaning left. It changes what you see, not what is saved — the take
+          keeps the camera's true orientation, which is why text behind you reads
+          the right way round in the file. Set it yourself and it stays set, even
+          when you swap cameras.</div>
       </div>
       <div class="field">
         <label>Microphone</label>
@@ -505,7 +516,7 @@ const SECURE = window.isSecureContext;
 /* ─────────────────────────── state ───────────────────────────── */
 const S = {
   size:44, lh:1.4, bandh:42, pad:8, dim:45, speed:45,
-  mirror:false, flip:true, mode:"manual",
+  mirror:false, flip:true, flipManual:false, mode:"manual",
   playing:false, offset:0, target:0, max:0, lastTs:0,
   words:[], wordEls:[], cursor:0,
   stream:null, recorder:null, chunks:[], recStart:0, recTimer:null, arming:false,
@@ -526,14 +537,14 @@ function saveScripts(list){
 }
 function savePrefs(){
   const p = {size:S.size,lh:S.lh,bandh:S.bandh,pad:S.pad,dim:S.dim,speed:S.speed,
-             mirror:S.mirror,flip:S.flip,mode:S.mode,
+             mirror:S.mirror,flip:S.flip,flipManual:S.flipManual,mode:S.mode,
              res:$("res").value,fps:$("fps").value,cd:$("cd").value,lang:$("lang").value};
   try { localStorage.setItem(LS_PREFS, JSON.stringify(p)); } catch {}
 }
 function loadPrefs(){
   let p; try { p = JSON.parse(localStorage.getItem(LS_PREFS)||"null"); } catch { return; }
   if (!p) return;
-  for (const k of ["size","lh","bandh","pad","dim","speed","mirror","flip","mode"])
+  for (const k of ["size","lh","bandh","pad","dim","speed","mirror","flip","flipManual","mode"])
     if (p[k] !== undefined) S[k] = p[k];
   if (p.res) $("res").value = p.res;
   if (p.fps) $("fps").value = p.fps;
@@ -916,7 +927,13 @@ async function startCam(){
   try { await v.play(); } catch {}
   $("noCam").classList.add("hide");
   // Selfie view is mirrored by convention; a rear camera must not be.
-  if (TOUCH){ S.flip = (S.facing === "user"); $("flip").classList.toggle("on", S.flip); measure(); }
+  // Selfie view is mirrored by convention and a rear camera must not be, so the
+  // sensible default follows the facing mode — but only until the user says
+  // otherwise. Overriding an explicit choice every time they swap cameras would
+  // make the toggle look like it doesn't work.
+  if (TOUCH && !S.flipManual){
+    S.flip = (S.facing === "user"); $("flip").classList.toggle("on", S.flip); measure();
+  }
   requestWakeLock();
   await listDevices();          // labels only populate after permission is granted
   showCamInfo();
@@ -1322,7 +1339,11 @@ $("mirror").onclick = () => {
   $("mirror").classList.toggle("on", S.mirror);
   measure(); savePrefs();
 };
-$("flip").onclick   = () => { S.flip   = !S.flip;   $("flip").classList.toggle("on", S.flip);     measure(); savePrefs(); };
+$("flip").onclick   = () => {
+  S.flip = !S.flip; S.flipManual = true;      // from here on, don't second-guess them
+  $("flip").classList.toggle("on", S.flip);
+  measure(); savePrefs();
+};
 ["res","fps","cd"].forEach(id => $(id).addEventListener("change", savePrefs));
 
 document.addEventListener("keydown", e => {
