@@ -47,6 +47,23 @@ To take it down:
 ./serve.sh --stop
 ```
 
+## Mirroring: do it afterwards, not while recording
+
+The app can mirror the recording so the take matches the preview, but on a phone
+it is not worth it. Mirroring copies every frame through a canvas before the
+encoder sees it, and an iPhone responds by stalling the preview and dropping
+frames: a 50-second 1080p take measured **7.6fps**, confirmed with ffprobe on
+the AirDropped file. Lost frames cannot be recovered afterwards.
+
+Film with **Record what I see** off, at full frame rate, then flip the file here:
+
+```bash
+./mirror.sh ~/Downloads/take-02.mp4
+```
+
+Audio is copied untouched and only the video is re-encoded. A 50-second 1080p
+take takes about five seconds.
+
 ## Getting takes off the phone
 
 The share sheet is the only route from a browser into Photos on iOS, and it is

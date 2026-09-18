@@ -364,12 +364,13 @@ kbd{
         <div class="row">
           <button class="grow" id="matchPreview">Record what I see</button>
         </div>
-        <div class="hint">Off, a selfie take is saved the camera's way round — the
-          opposite of the mirrored preview you read from. On, the take matches your
-          preview exactly. The cost is that every frame is redrawn as it records,
-          so leave it off at 4K, and prefer 1080p if a long take stutters. Text in
-          shot comes out back-to-front either way round; that's what mirroring
-          means.</div>
+        <div class="hint"><strong>Measured on an iPhone: a 50-second take came back
+          at 7.6fps.</strong> Every frame has to be copied through a canvas before
+          it is encoded, and a phone answers by dropping frames and stalling the
+          preview. Leave this off, film at full frame rate, and flip the file
+          afterwards with <code>./mirror.sh</code> on the machine serving this
+          page — same result, none of the cost. Only worth turning on if you have
+          checked a short take and it holds its frame rate.</div>
       </div>
       <div class="field">
         <label>Microphone</label>
@@ -1234,7 +1235,6 @@ async function startRec(){
   }
   if (!S.stream){ composer?.stop(); return; }   // camera stopped during that wait
   S.composer = composer;            // reachable from every teardown path, not just onstop
-  const composerFps = composer ? composer.fps : null;
   const src = composer ? composer.stream : S.stream;
   try {
     // A flat bitrate starves 4K and wastes space at 480p; ~0.12 bits per pixel
@@ -1255,16 +1255,16 @@ async function startRec(){
   S.recorder.onstop = () => {
     // After the recorder has flushed, never before — pulling the canvas track
     // out from under it mid-stop loses the tail of the take.
-    const achieved = composer ? composer.realFps : null;
     composer?.stop();
     if (S.composer === composer) S.composer = null;
     const blob = new Blob(S.chunks, { type: mime });
     S.chunks = [];
-    addTake(blob, mime, (Date.now() - startedAt) / 1000, achieved);
-    // Better to hear it now than to find it in the camera roll.
-    if (achieved != null && achieved < (composerFps || 30) * 0.7){
-      toast(`That take only managed ${achieved.toFixed(1)} fps. Drop the resolution, `
-          + `or turn off "Record what I see".`, 6000);
+    addTake(blob, mime, (Date.now() - startedAt) / 1000, !!composer);
+    // Counting canvas paints told us 32fps on a take ffprobe measured at 7.6 —
+    // painting was never the bottleneck, so that number was worse than none.
+    // What can honestly be said is which takes went through the composer.
+    if (composer){
+      toast("Mirrored take — check the frame rate before you rely on it.", 5000);
     }
   };
   // Safari's MediaRecorder writes a fragmented file when given a timeslice, and
@@ -1348,7 +1348,7 @@ function tx(mode, fn){
 // on load, and `when` round-trips as a Date because structured clone keeps it.
 const toRecord = t =>
   ({ id:t.id, file:t.file, mime:t.mime, size:t.size, secs:t.secs, when:t.when,
-     fps:t.fps ?? null, blob:t.blob });
+     mirrored:!!t.mirrored, blob:t.blob });
 
 async function persistTake(t){
   try {
@@ -1383,7 +1383,7 @@ async function loadTakes(){
 
 /* ─────────────────────────── takes ───────────────────────────── */
 const takes = [];
-function addTake(blob, mime, secs, realFps){
+function addTake(blob, mime, secs, wasMirrored){
   const ext = mime.includes("mp4") ? "mp4" : "webm";
   const name = ($("title").value.trim() || "take").replace(/[^\w\-]+/g, "-").toLowerCase();
   const t = {
@@ -1393,7 +1393,7 @@ function addTake(blob, mime, secs, realFps){
     file: `${name}-${String(++S.takeSeq).padStart(2,"0")}.${ext}`,
     url: URL.createObjectURL(blob), mime, blob,   // blob kept for the share sheet
     size: blob.size, secs, when: new Date(), stored: false,
-    fps: (realFps != null && isFinite(realFps)) ? Math.round(realFps * 10) / 10 : null,
+    mirrored: !!wasMirrored,
   };
   takes.unshift(t);
   drawTakes();
@@ -1419,7 +1419,7 @@ function drawTakes(){
     d.innerHTML =
       `<div class="t">${t.file}</div>
        <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)}${
-         t.fps ? ` · ${t.fps} fps` : ""} · ${t.when.toLocaleTimeString()}${
+         t.mirrored ? ` · <span class="unsaved">mirrored</span>` : ""} · ${t.when.toLocaleTimeString()}${
          t.stored ? "" : ` · <span class="unsaved">in memory only</span>`}</div>
        <div class="acts">
          <button data-a="dl">${(TOUCH || isMobileLayout()) ? "Save / Share" : "Download"}</button>
