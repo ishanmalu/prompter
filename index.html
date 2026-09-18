@@ -509,8 +509,13 @@ const SECURE = window.isSecureContext;
 (function contextBanner(){
   const host = location.hostname;
   const note = $("ctxnote");
+  // server.py substitutes the page's mtime here. If it still reads __BUILD__ the
+  // page came from somewhere that isn't server.py; if it reads an old time, the
+  // browser served a cached copy and nothing you just changed is running.
+  const build = "__BUILD__".startsWith("__") ? "unstamped" : "__BUILD__";
   if (SECURE){
-    note.textContent = host.endsWith(".ts.net") ? "over tailnet · secure ✓" : host + " · secure ✓";
+    note.textContent = (host.endsWith(".ts.net") ? "over tailnet · secure ✓" : host + " · secure ✓")
+                     + " · build " + build;
     note.style.color = "var(--ok)";
   } else {
     note.textContent = "insecure origin — camera blocked";

@@ -40,6 +40,36 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(HERE), **kw)
 
+    def do_GET(self):
+        """Serve the page itself uncached, stamped with the file's mtime.
+
+        iOS Safari held on to index.html hard enough that fixes appeared not to
+        work: takes recorded before and after a change to the audio constraints
+        came out within 0.4 dB of each other, because the phone was still running
+        the old script. Nothing here is worth caching -- it is one small file off
+        a machine on the same tailnet -- and the stamp makes "which code is this?"
+        answerable from the phone instead of inferred from a recording.
+        """
+        if self.path.split("?")[0] in ("/", "/index.html"):
+            try:
+                page = (HERE / "index.html").read_text(encoding="utf-8")
+            except OSError:
+                self.send_error(404)
+                return
+            stamp = datetime.fromtimestamp(
+                (HERE / "index.html").stat().st_mtime).strftime("%b %d %H:%M")
+            body = page.replace("__BUILD__", stamp).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
     def _json(self, code, body):
         payload = repr(body).replace("'", '"').encode()
         self.send_response(code)
