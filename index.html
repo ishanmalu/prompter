@@ -536,6 +536,29 @@ const S = {
 /* ─────────────────────── persistence (localStorage) ──────────── */
 const LS_SCRIPTS = "prompter.scripts.v1";
 const LS_PREFS   = "prompter.prefs.v1";
+const LS_DRAFT   = "prompter.draft.v1";
+
+// The script box used to be repopulated with the welcome text on every load, so
+// anything typed and not explicitly Saved was gone after a reload — and iOS
+// discards and restores tabs constantly, which made scripts evaporate for no
+// visible reason. The working text is now kept separately from the library: the
+// library is scripts you chose to name and keep, this is simply what is in the
+// box right now.
+let draftTimer;
+function saveDraft(){
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(LS_DRAFT, JSON.stringify({
+        title: $("title").value, text: $("text").value, id: S.currentId,
+      }));
+    } catch {}          // a full or blocked store must never break typing
+  }, 400);              // debounced: this fires on every keystroke
+}
+function loadDraft(){
+  try { return JSON.parse(localStorage.getItem(LS_DRAFT) || "null"); }
+  catch { return null; }
+}
 
 function loadScripts(){
   try { return JSON.parse(localStorage.getItem(LS_SCRIPTS) || "[]"); }
@@ -1091,6 +1114,20 @@ function startMirrorComposer(){
     : () => requestAnimationFrame(draw);
   schedule();
 
+  // Neither callback is guaranteed to keep firing: rVFC can deliver one frame and
+  // then stall, and rAF stalls whenever the page stops being painted. Either way
+  // the canvas holds its last image and the take comes out as a frozen still,
+  // which is worse than not offering the feature. This watchdog runs at the
+  // target rate and paints only when the callback hasn't, so the track always has
+  // fresh frames no matter which path is actually working.
+  let lastSeen = -1;
+  const period = Math.max(16, Math.round(1000 / (fps || 30)));
+  const watchdog = setInterval(() => {
+    if (stopped) return;
+    if (frames === lastSeen) { ctx.drawImage(v, 0, 0, w, h); frames++; if (frames === 1) seen(); }
+    lastSeen = frames;
+  }, period);
+
   const out = canvas.captureStream(fps);
   // Audio is untouched: reuse the camera's own track rather than re-encoding it.
   for (const a of S.stream.getAudioTracks()) out.addTrack(a);
@@ -1100,6 +1137,7 @@ function startMirrorComposer(){
     get frames(){ return frames; },
     stop(){
       stopped = true;
+      clearInterval(watchdog);
       // Only the canvas's own video track — the audio belongs to the camera
       // stream and stopping it would kill the mic for the next take.
       out.getVideoTracks().forEach(t => t.stop());
@@ -1381,7 +1419,7 @@ function drawScripts(){
        <div class="acts"><button data-a="load">Load</button><button data-a="rm">Delete</button></div>`;
     d.querySelector('[data-a=load]').onclick = () => {
       $("title").value = s.title; $("text").value = s.text;
-      S.currentId = s.id; renderScript(); toast("Loaded");
+      S.currentId = s.id; renderScript(); saveDraft(); toast("Loaded");
     };
     d.querySelector('[data-a=rm]').onclick = () => {
       saveScripts(loadScripts().filter(x => x.id !== s.id));
@@ -1408,11 +1446,11 @@ $("save").onclick = () => {
     const s = { id, title, text, at: Date.now() };
     S.currentId = s.id; list.unshift(s);
   }
-  saveScripts(list); drawScripts(); toast("Saved");
+  saveScripts(list); drawScripts(); saveDraft(); toast("Saved");
 };
 $("new").onclick = () => {
   S.currentId = null; $("title").value = ""; $("text").value = "";
-  renderScript(); toast("New script");
+  renderScript(); saveDraft(); toast("New script");
 };
 
 /* ─────────────────────── control bindings ────────────────────── */
@@ -1430,7 +1468,8 @@ function bindRange(id, key, fmt, after){
   upd();
 }
 
-$("text").addEventListener("input", renderScript);
+$("text").addEventListener("input", () => { renderScript(); saveDraft(); });
+$("title").addEventListener("input", saveDraft);
 $("mirror").onclick = () => {
   S.mirror = !S.mirror;
   $("mirror").classList.toggle("on", S.mirror);
@@ -1577,7 +1616,16 @@ $("flip").classList.toggle("on", S.flip);
 
 setMode(SR ? S.mode : "manual");
 
-$("text").value = (TOUCH || isMobileLayout()) ? `Welcome to Prompter.
+// The welcome text is a first-run demo, not a reset button: restore whatever
+// was actually in the box, and only fall back to the demo when there is no
+// draft at all.
+const draft = loadDraft();
+if (draft && (draft.text || draft.title)){
+  $("text").value  = draft.text  || "";
+  $("title").value = draft.title || "";
+  S.currentId = draft.id ?? null;
+} else {
+  $("text").value = (TOUCH || isMobileLayout()) ? `Welcome to Prompter.
 
 Tap the menu button to open the panel, paste your script, and close it again. Tap anywhere on the video to start and stop scrolling, and drag up or down to find your place.
 
@@ -1590,6 +1638,7 @@ Paste your script in the panel on the left, then hit Start. Use the spacebar to 
 Try voice follow: switch the mode over in the Prompter tab, start reading, and the script keeps pace with you instead of the other way around. Skip a word or ad-lib for a moment and it will find you again.
 
 Keep the band small and near the top of the frame. The closer the text sits to your camera lens, the more it looks like you are talking to whoever is watching, rather than reading past them.`;
+}
 renderScript();
 drawScripts();
 $("takesHint").innerHTML = (TOUCH || isMobileLayout())
