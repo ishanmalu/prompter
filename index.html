@@ -1233,7 +1233,13 @@ async function startRec(){
     S.chunks = [];
     addTake(blob, mime, (Date.now() - startedAt) / 1000);
   };
-  S.recorder.start(1000);      // 1s timeslices keep memory bounded
+  // Safari's MediaRecorder writes a fragmented file when given a timeslice, and
+  // the result carries no usable duration: players show a nonsense length (hours
+  // for a one-minute take) and the scrubber won't seek. Asking for a single blob
+  // at stop lets it write a normal header. This costs nothing here — every chunk
+  // is retained in S.chunks until stop either way, so the timeslice never bounded
+  // memory the way the old comment claimed; it only changed the delivery.
+  if (IOS) S.recorder.start(); else S.recorder.start(1000);
   if (isMobileLayout()) sheetOpen(false);   // get the panel out of the shot
   S.recStart = startedAt;
   setBtn("rec", "■", "Stop");
