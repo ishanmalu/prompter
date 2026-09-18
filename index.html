@@ -977,6 +977,8 @@ async function startCam(){
     }
   }
 
+  watchTracks(S.stream);
+  S.videoStalled = false;
   const v = $("cam");
   v.srcObject = S.stream;
   // iOS Safari frequently ignores the autoplay attribute when srcObject is
@@ -1019,6 +1021,35 @@ function stopCam(){
   $("noCam").classList.remove("hide");
   $("camInfo").textContent = "";
   if (S.wake){ try { S.wake.release(); } catch {} S.wake = null; }
+}
+
+/* ─────────────── camera track health ─────────────────────────── */
+// Takes were coming back with perfect 30fps video that simply stopped 10-15s in
+// while the audio ran to the end — the player then holds the last frame, which
+// looks exactly like the app freezing. A camera track that dies cleanly on its
+// own, with audio untouched, is the platform muting or ending it. These are the
+// events that say so, and without them the failure is invisible until the file
+// is already on another machine.
+function watchTracks(stream){
+  for (const t of stream.getVideoTracks()){
+    t.onmute = () => {
+      S.videoStalled = true;
+      const into = S.recStart ? ` ${((Date.now() - S.recStart) / 1000).toFixed(1)}s in` : "";
+      toast(`Camera feed suspended${into} — video has STOPPED recording. Audio continues.`, 9000);
+      $("camInfo").textContent = "⚠ camera feed suspended — video not recording";
+      $("camInfo").style.color = "var(--rec)";
+    };
+    t.onunmute = () => {
+      S.videoStalled = false;
+      $("camInfo").style.color = "";
+      showCamInfo();
+      toast("Camera feed resumed.", 3000);
+    };
+    t.onended = () => {
+      S.videoStalled = true;
+      toast("Camera track ended — stop the take, it has no more video.", 9000);
+    };
+  }
 }
 
 /* ─────────────── front/back swap, fullscreen, wake lock ───────── */
@@ -1280,7 +1311,7 @@ async function startRec(){
     if (S.composer === composer) S.composer = null;
     const blob = new Blob(S.chunks, { type: mime });
     S.chunks = [];
-    addTake(blob, mime, (Date.now() - startedAt) / 1000, !!composer);
+    addTake(blob, mime, (Date.now() - startedAt) / 1000, !!composer, S.videoStalled);
     // Counting canvas paints told us 32fps on a take ffprobe measured at 7.6 —
     // painting was never the bottleneck, so that number was worse than none.
     // What can honestly be said is which takes went through the composer.
@@ -1369,7 +1400,7 @@ function tx(mode, fn){
 // on load, and `when` round-trips as a Date because structured clone keeps it.
 const toRecord = t =>
   ({ id:t.id, file:t.file, mime:t.mime, size:t.size, secs:t.secs, when:t.when,
-     mirrored:!!t.mirrored, blob:t.blob });
+     mirrored:!!t.mirrored, stalled:!!t.stalled, blob:t.blob });
 
 async function persistTake(t){
   try {
@@ -1404,7 +1435,7 @@ async function loadTakes(){
 
 /* ─────────────────────────── takes ───────────────────────────── */
 const takes = [];
-function addTake(blob, mime, secs, wasMirrored){
+function addTake(blob, mime, secs, wasMirrored, stalled){
   const ext = mime.includes("mp4") ? "mp4" : "webm";
   const name = ($("title").value.trim() || "take").replace(/[^\w\-]+/g, "-").toLowerCase();
   const t = {
@@ -1414,7 +1445,7 @@ function addTake(blob, mime, secs, wasMirrored){
     file: `${name}-${String(++S.takeSeq).padStart(2,"0")}.${ext}`,
     url: URL.createObjectURL(blob), mime, blob,   // blob kept for the share sheet
     size: blob.size, secs, when: new Date(), stored: false,
-    mirrored: !!wasMirrored,
+    mirrored: !!wasMirrored, stalled: !!stalled,
   };
   takes.unshift(t);
   drawTakes();
@@ -1440,7 +1471,8 @@ function drawTakes(){
     d.innerHTML =
       `<div class="t">${t.file}</div>
        <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)}${
-         t.mirrored ? ` · <span class="unsaved">mirrored</span>` : ""} · ${t.when.toLocaleTimeString()}${
+         t.mirrored ? ` · <span class="unsaved">mirrored</span>` : ""}${
+         t.stalled ? ` · <span class="unsaved">video cut short</span>` : ""} · ${t.when.toLocaleTimeString()}${
          t.stored ? "" : ` · <span class="unsaved">in memory only</span>`}</div>
        <div class="acts">
          <button data-a="dl">${(TOUCH || isMobileLayout()) ? "Save / Share" : "Download"}</button>
