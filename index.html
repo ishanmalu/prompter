@@ -978,6 +978,7 @@ async function startCam(){
   }
 
   watchTracks(S.stream);
+  keepPreviewAlive();
   S.videoStalled = false;
   const v = $("cam");
   v.srcObject = S.stream;
@@ -1024,6 +1025,62 @@ function stopCam(){
 }
 
 /* ─────────────── camera track health ─────────────────────────── */
+// The <video> showing the camera is also what keeps the camera running: if iOS
+// pauses that element, frames stop reaching MediaRecorder even though the track
+// still looks live. We called play() once at startup and never looked again.
+// Apple's own Camera app records for minutes on the same device, so this is
+// Safari-side, and a paused preview is the most likely way it happens.
+function keepPreviewAlive(){
+  const v = $("cam");
+  if (v.dataset.keepalive) return;        // only ever wire this once
+  v.dataset.keepalive = "1";
+  v.addEventListener("pause", () => {
+    if (!S.stream) return;                // a deliberate stop, leave it alone
+    S.previewPauses = (S.previewPauses || 0) + 1;
+    v.play().catch(() => {});
+  });
+}
+
+// One sample a second while recording, so a take that dies can say what state
+// everything was in when it happened. Reading this off the phone beats moving
+// the file to another machine and inferring it from frame timestamps.
+function startHealthLog(){
+  const v = $("cam");
+  const t = S.stream?.getVideoTracks()[0];
+  S.health = [];
+  S.previewPauses = 0;
+  let lastTime = -1, stalledSince = null;
+  S.healthTimer = setInterval(() => {
+    const now = ((Date.now() - S.recStart) / 1000);
+    const advancing = v.currentTime !== lastTime;
+    lastTime = v.currentTime;
+    if (!advancing && stalledSince === null) stalledSince = now;
+    if (advancing) stalledSince = null;
+    S.health.push({
+      t: +now.toFixed(1),
+      muted: t ? t.muted : null,
+      state: t ? t.readyState : null,
+      paused: v.paused,
+      advancing,
+    });
+  }, 1000);
+}
+
+function stopHealthLog(){
+  clearInterval(S.healthTimer);
+  if (!S.health?.length) return null;
+  const first = S.health.find(h => h.muted || h.paused || !h.advancing);
+  return {
+    samples: S.health.length,
+    pauses: S.previewPauses || 0,
+    firstProblemAt: first ? first.t : null,
+    firstProblem: first
+      ? (first.muted ? "track muted" : first.paused ? "preview paused" : "preview stopped advancing")
+      : null,
+  };
+}
+
+
 // Takes were coming back with perfect 30fps video that simply stopped 10-15s in
 // while the audio ran to the end — the player then holds the last frame, which
 // looks exactly like the app freezing. A camera track that dies cleanly on its
@@ -1311,7 +1368,13 @@ async function startRec(){
     if (S.composer === composer) S.composer = null;
     const blob = new Blob(S.chunks, { type: mime });
     S.chunks = [];
-    addTake(blob, mime, (Date.now() - startedAt) / 1000, !!composer, S.videoStalled);
+    const health = stopHealthLog();
+    addTake(blob, mime, (Date.now() - startedAt) / 1000, !!composer, S.videoStalled, health);
+    if (health?.firstProblemAt != null){
+      toast(`Video stopped ${health.firstProblemAt}s in: ${health.firstProblem}.`, 9000);
+    } else if (health?.pauses){
+      toast(`Preview paused ${health.pauses}× and was restarted — tell Claude this number.`, 8000);
+    }
     // Counting canvas paints told us 32fps on a take ffprobe measured at 7.6 —
     // painting was never the bottleneck, so that number was worse than none.
     // What can honestly be said is which takes went through the composer.
@@ -1328,6 +1391,7 @@ async function startRec(){
   if (IOS) S.recorder.start(); else S.recorder.start(1000);
   if (isMobileLayout()) sheetOpen(false);   // get the panel out of the shot
   S.recStart = startedAt;
+  startHealthLog();
   setBtn("rec", "■", "Stop");
   $("recPill").style.display = "";
   S.recTimer = setInterval(() => {
@@ -1400,7 +1464,7 @@ function tx(mode, fn){
 // on load, and `when` round-trips as a Date because structured clone keeps it.
 const toRecord = t =>
   ({ id:t.id, file:t.file, mime:t.mime, size:t.size, secs:t.secs, when:t.when,
-     mirrored:!!t.mirrored, stalled:!!t.stalled, blob:t.blob });
+     mirrored:!!t.mirrored, stalled:!!t.stalled, health:t.health ?? null, blob:t.blob });
 
 async function persistTake(t){
   try {
@@ -1435,7 +1499,7 @@ async function loadTakes(){
 
 /* ─────────────────────────── takes ───────────────────────────── */
 const takes = [];
-function addTake(blob, mime, secs, wasMirrored, stalled){
+function addTake(blob, mime, secs, wasMirrored, stalled, health){
   const ext = mime.includes("mp4") ? "mp4" : "webm";
   const name = ($("title").value.trim() || "take").replace(/[^\w\-]+/g, "-").toLowerCase();
   const t = {
@@ -1445,7 +1509,7 @@ function addTake(blob, mime, secs, wasMirrored, stalled){
     file: `${name}-${String(++S.takeSeq).padStart(2,"0")}.${ext}`,
     url: URL.createObjectURL(blob), mime, blob,   // blob kept for the share sheet
     size: blob.size, secs, when: new Date(), stored: false,
-    mirrored: !!wasMirrored, stalled: !!stalled,
+    mirrored: !!wasMirrored, stalled: !!stalled, health: health || null,
   };
   takes.unshift(t);
   drawTakes();
@@ -1473,6 +1537,11 @@ function drawTakes(){
        <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)}${
          t.mirrored ? ` · <span class="unsaved">mirrored</span>` : ""}${
          t.stalled ? ` · <span class="unsaved">video cut short</span>` : ""} · ${t.when.toLocaleTimeString()}${
+         (t.health && (t.health.firstProblemAt != null || t.health.pauses))
+           ? `<br><span class="unsaved">${
+               t.health.firstProblemAt != null
+                 ? `video stopped ${t.health.firstProblemAt}s in — ${t.health.firstProblem}` : "recording healthy"
+             }${t.health.pauses ? `, preview paused ${t.health.pauses}×` : ""}</span>` : ""}${
          t.stored ? "" : ` · <span class="unsaved">in memory only</span>`}</div>
        <div class="acts">
          <button data-a="dl">${(TOUCH || isMobileLayout()) ? "Save / Share" : "Download"}</button>
