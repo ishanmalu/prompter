@@ -951,17 +951,14 @@ async function startCam(){
       // deviceIds there are unstable and often unlabelled until permission.
       ...(vid && !TOUCH ? { deviceId: { exact: vid } } : { facingMode: S.facing }),
     },
-    audio: {
-      echoCancellation: false,   // we're recording, not conferencing
-      noiseSuppression: false,
-      // Gain control stays ON. It is the one of the three that sets level, and
-      // every app you'd compare this to — Camera, Voice Memos — applies it, so
-      // turning it off made takes sound far quieter than the same phone
-      // normally records. Echo cancellation and noise suppression are the ones
-      // worth refusing: they're tuned for calls and chew up a spoken take.
-      autoGainControl: true,
-      ...(aud ? { deviceId: { exact: aud } } : {}),
-    },
+    // Take the browser's own audio defaults. Asking for echoCancellation:false
+    // looks like "don't degrade my recording", but on iOS it switches the input
+    // off the voice-processing audio unit — and that unit is what applies gain.
+    // The result was every take landing at about -54 dB mean, near silence,
+    // whatever autoGainControl asked for, because gain was no longer in the
+    // path to apply. Measured across four takes: -53.7, -54.1, -54.2, -54.2 dB,
+    // unmoved by changing autoGainControl alone.
+    audio: aud ? { deviceId: { exact: aud } } : true,
   };
 
   try {
