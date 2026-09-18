@@ -22,7 +22,7 @@ recorder captures the camera stream, not the screen.
 ## Running it on your tailnet
 
 ```bash
-./serve.sh
+./server.py
 ```
 
 Then open the `https://<machine>.ts.net/` URL it prints, on any device in your
@@ -46,6 +46,25 @@ To take it down:
 ```bash
 ./serve.sh --stop
 ```
+
+## Getting takes off the phone
+
+The share sheet is the only route from a browser into Photos on iOS, and it is
+not a plain copy — takes can arrive re-encoded, which is where frame rate goes
+missing. **Send to Mac**, on each take, posts the original bytes to the machine
+serving the page instead. They land in `takes/`, untouched, and you can check
+what you actually recorded:
+
+```bash
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=avg_frame_rate,nb_frames -show_entries format=duration \
+  takes/your-take.mp4
+```
+
+`avg_frame_rate` there is the truth. If it is healthy but Photos disagrees, the
+problem is the trip through the share sheet, not the recording.
+
+This needs `server.py` rather than `python3 -m http.server`, which only serves.
 
 ## Keeping it running
 

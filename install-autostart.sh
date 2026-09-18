@@ -5,7 +5,8 @@
 #   ./install-autostart.sh         # default port 8080
 #   ./install-autostart.sh 9000    # different port
 #
-# This starts only the local file server. It stays bound to 127.0.0.1 because
+# This starts server.py -- the static server plus the /upload endpoint that
+# "Send to Mac" posts takes to. It stays bound to 127.0.0.1 because
 # `tailscale serve` is what puts it on the tailnet, and serve needs a real
 # certificate in front of it — getUserMedia refuses a plain-HTTP origin, so
 # binding straight to the tailnet IP would give you a page with a dead camera.
