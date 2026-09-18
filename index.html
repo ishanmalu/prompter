@@ -51,6 +51,11 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
 /* ---------- shell ---------- */
 #app{position:fixed;inset:0;display:grid;grid-template-columns:340px 1fr}
 #app.solo{grid-template-columns:1fr}
+/* The scrim sits inside #app so it can be stacked against the sheet, but #app
+   is a grid: left in flow it would claim the sidebar's column and shove the
+   panel onto the stage. Everything else about it is defined in the mobile
+   layout, where it is the only place it is ever visible. */
+#scrim{position:fixed;inset:0;opacity:0;pointer-events:none}
 
 #stage{position:relative;background:#000;overflow:hidden;grid-column:2}
 #app.solo #stage{grid-column:1}
@@ -255,8 +260,12 @@ kbd{
 </style>
 </head>
 <body>
-<div id="scrim"></div>
 <div id="app">
+  <!-- The scrim must live INSIDE #app. #app is position:fixed, which creates a
+       stacking context, so #side's z-index is only comparable with its siblings
+       here; as a sibling of #app the scrim painted above the entire panel and
+       swallowed every tap meant for a tab, a dropdown or the script box. -->
+  <div id="scrim"></div>
   <aside id="side">
     <div id="grab"></div>
     <div class="sidehead">
