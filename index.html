@@ -1085,12 +1085,27 @@ navigator.mediaDevices?.addEventListener?.("devicechange", listDevices);
 // This costs real work per frame, so it is opt-in and only wired up when the
 // preview is actually mirrored; otherwise the camera track is recorded directly,
 // exactly as before.
+// Mirroring above 1080p is not worth what it costs. Every frame is copied from
+// the video into a canvas and then encoded, so 4K is ~8.3M pixels moved 30 times
+// a second while the preview, the scrolling text and the encoder fight for the
+// same chip — a phone answers by dropping to a handful of frames a second, and
+// a smooth 1080p take beats a 5fps 4K one every time.
+const MIRROR_MAX_PX = 1920 * 1080;
+
 function startMirrorComposer(){
   const v = $("cam");
   const st = S.stream.getVideoTracks()[0]?.getSettings() ?? {};
-  const w = st.width  || v.videoWidth  || 1280;
-  const h = st.height || v.videoHeight || 720;
+  let w = st.width  || v.videoWidth  || 1280;
+  let h = st.height || v.videoHeight || 720;
   const fps = st.frameRate || 30;
+
+  if (w * h > MIRROR_MAX_PX){
+    const k = Math.sqrt(MIRROR_MAX_PX / (w * h));
+    // Even dimensions: odd ones make H.264 encoders unhappy.
+    w = Math.round(w * k / 2) * 2;
+    h = Math.round(h * k / 2) * 2;
+    toast(`Mirroring at ${h}p — full resolution can't keep frame rate here.`, 4000);
+  }
 
   const canvas = document.createElement("canvas");
   canvas.width = w; canvas.height = h;
@@ -1101,6 +1116,7 @@ function startMirrorComposer(){
   ctx.translate(w, 0); ctx.scale(-1, 1);
 
   let stopped = false, frames = 0, seen;
+  const began = Date.now();
   // Resolves on the first composed frame. If frames never arrive the canvas track
   // stays empty and MediaRecorder happily produces a 0-byte file, so the caller
   // waits for this before committing a take to the composed stream.
@@ -1141,6 +1157,8 @@ function startMirrorComposer(){
   return {
     stream: out, width: w, height: h, fps, firstFrame,
     get frames(){ return frames; },
+    // What was actually achieved, as opposed to asked for.
+    get realFps(){ const s = (Date.now() - began) / 1000; return s > 0 ? frames / s : 0; },
     stop(){
       if (stopped) return;          // safe to call from every teardown path
       stopped = true;
@@ -1216,6 +1234,7 @@ async function startRec(){
   }
   if (!S.stream){ composer?.stop(); return; }   // camera stopped during that wait
   S.composer = composer;            // reachable from every teardown path, not just onstop
+  const composerFps = composer ? composer.fps : null;
   const src = composer ? composer.stream : S.stream;
   try {
     // A flat bitrate starves 4K and wastes space at 480p; ~0.12 bits per pixel
@@ -1236,11 +1255,17 @@ async function startRec(){
   S.recorder.onstop = () => {
     // After the recorder has flushed, never before — pulling the canvas track
     // out from under it mid-stop loses the tail of the take.
+    const achieved = composer ? composer.realFps : null;
     composer?.stop();
     if (S.composer === composer) S.composer = null;
     const blob = new Blob(S.chunks, { type: mime });
     S.chunks = [];
-    addTake(blob, mime, (Date.now() - startedAt) / 1000);
+    addTake(blob, mime, (Date.now() - startedAt) / 1000, achieved);
+    // Better to hear it now than to find it in the camera roll.
+    if (achieved != null && achieved < (composerFps || 30) * 0.7){
+      toast(`That take only managed ${achieved.toFixed(1)} fps. Drop the resolution, `
+          + `or turn off "Record what I see".`, 6000);
+    }
   };
   // Safari's MediaRecorder writes a fragmented file when given a timeslice, and
   // the result carries no usable duration: players show a nonsense length (hours
@@ -1322,7 +1347,8 @@ function tx(mode, fn){
 // Only the fields worth keeping: the object URL is per-session and is rebuilt
 // on load, and `when` round-trips as a Date because structured clone keeps it.
 const toRecord = t =>
-  ({ id:t.id, file:t.file, mime:t.mime, size:t.size, secs:t.secs, when:t.when, blob:t.blob });
+  ({ id:t.id, file:t.file, mime:t.mime, size:t.size, secs:t.secs, when:t.when,
+     fps:t.fps ?? null, blob:t.blob });
 
 async function persistTake(t){
   try {
@@ -1357,7 +1383,7 @@ async function loadTakes(){
 
 /* ─────────────────────────── takes ───────────────────────────── */
 const takes = [];
-function addTake(blob, mime, secs){
+function addTake(blob, mime, secs, realFps){
   const ext = mime.includes("mp4") ? "mp4" : "webm";
   const name = ($("title").value.trim() || "take").replace(/[^\w\-]+/g, "-").toLowerCase();
   const t = {
@@ -1367,6 +1393,7 @@ function addTake(blob, mime, secs){
     file: `${name}-${String(++S.takeSeq).padStart(2,"0")}.${ext}`,
     url: URL.createObjectURL(blob), mime, blob,   // blob kept for the share sheet
     size: blob.size, secs, when: new Date(), stored: false,
+    fps: (realFps != null && isFinite(realFps)) ? Math.round(realFps * 10) / 10 : null,
   };
   takes.unshift(t);
   drawTakes();
@@ -1391,7 +1418,8 @@ function drawTakes(){
     d.className = "item";
     d.innerHTML =
       `<div class="t">${t.file}</div>
-       <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)} · ${t.when.toLocaleTimeString()}${
+       <div class="m">${fmtTime(t.secs)} · ${fmtSize(t.size)}${
+         t.fps ? ` · ${t.fps} fps` : ""} · ${t.when.toLocaleTimeString()}${
          t.stored ? "" : ` · <span class="unsaved">in memory only</span>`}</div>
        <div class="acts">
          <button data-a="dl">${(TOUCH || isMobileLayout()) ? "Save / Share" : "Download"}</button>
