@@ -356,10 +356,20 @@ kbd{
           <button class="grow" id="flip">Mirror preview</button>
         </div>
         <div class="hint">On by default for the front camera, so leaning left looks
-          like leaning left. It changes what you see, not what is saved — the take
-          keeps the camera's true orientation, which is why text behind you reads
-          the right way round in the file. Set it yourself and it stays set, even
-          when you swap cameras.</div>
+          like leaning left. Set it yourself and it stays set, even when you swap
+          cameras.</div>
+      </div>
+      <div class="field">
+        <label>Recording orientation</label>
+        <div class="row">
+          <button class="grow" id="matchPreview">Record what I see</button>
+        </div>
+        <div class="hint">Off, a selfie take is saved the camera's way round — the
+          opposite of the mirrored preview you read from. On, the take matches your
+          preview exactly. The cost is that every frame is redrawn as it records,
+          so leave it off at 4K, and prefer 1080p if a long take stutters. Text in
+          shot comes out back-to-front either way round; that's what mirroring
+          means.</div>
       </div>
       <div class="field">
         <label>Microphone</label>
@@ -516,7 +526,7 @@ const SECURE = window.isSecureContext;
 /* ─────────────────────────── state ───────────────────────────── */
 const S = {
   size:44, lh:1.4, bandh:42, pad:8, dim:45, speed:45,
-  mirror:false, flip:true, flipManual:false, mode:"manual",
+  mirror:false, flip:true, flipManual:false, matchPreview:false, mode:"manual",
   playing:false, offset:0, target:0, max:0, lastTs:0,
   words:[], wordEls:[], cursor:0,
   stream:null, recorder:null, chunks:[], recStart:0, recTimer:null, arming:false,
@@ -537,14 +547,16 @@ function saveScripts(list){
 }
 function savePrefs(){
   const p = {size:S.size,lh:S.lh,bandh:S.bandh,pad:S.pad,dim:S.dim,speed:S.speed,
-             mirror:S.mirror,flip:S.flip,flipManual:S.flipManual,mode:S.mode,
+             mirror:S.mirror,flip:S.flip,flipManual:S.flipManual,
+             matchPreview:S.matchPreview,mode:S.mode,
              res:$("res").value,fps:$("fps").value,cd:$("cd").value,lang:$("lang").value};
   try { localStorage.setItem(LS_PREFS, JSON.stringify(p)); } catch {}
 }
 function loadPrefs(){
   let p; try { p = JSON.parse(localStorage.getItem(LS_PREFS)||"null"); } catch { return; }
   if (!p) return;
-  for (const k of ["size","lh","bandh","pad","dim","speed","mirror","flip","flipManual","mode"])
+  for (const k of ["size","lh","bandh","pad","dim","speed","mirror","flip","flipManual",
+                   "matchPreview","mode"])
     if (p[k] !== undefined) S[k] = p[k];
   if (p.res) $("res").value = p.res;
   if (p.fps) $("fps").value = p.fps;
@@ -932,7 +944,8 @@ async function startCam(){
   // otherwise. Overriding an explicit choice every time they swap cameras would
   // make the toggle look like it doesn't work.
   if (TOUCH && !S.flipManual){
-    S.flip = (S.facing === "user"); $("flip").classList.toggle("on", S.flip); measure();
+    S.flip = (S.facing === "user"); $("flip").classList.toggle("on", S.flip);
+$("matchPreview").classList.toggle("on", S.matchPreview); measure();
   }
   requestWakeLock();
   await listDevices();          // labels only populate after permission is granted
@@ -1034,6 +1047,66 @@ $("bigStart").onclick = e => { e.stopPropagation(); startCam(); };
 $("stopcam").onclick = () => { stopCam(); toast("Camera stopped"); };
 navigator.mediaDevices?.addEventListener?.("devicechange", listDevices);
 
+/* ──────────────── mirroring the recording, not just the view ──── */
+// MediaRecorder records the camera track, and the preview's mirror is only a CSS
+// transform on the <video> — so a selfie take always came out the camera's way
+// round, the opposite of what you watched while reading. To record what you
+// actually see, the frames have to be redrawn flipped and re-captured.
+//
+// This costs real work per frame, so it is opt-in and only wired up when the
+// preview is actually mirrored; otherwise the camera track is recorded directly,
+// exactly as before.
+function startMirrorComposer(){
+  const v = $("cam");
+  const st = S.stream.getVideoTracks()[0]?.getSettings() ?? {};
+  const w = st.width  || v.videoWidth  || 1280;
+  const h = st.height || v.videoHeight || 720;
+  const fps = st.frameRate || 30;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d", { alpha:false });
+  // Set the flip once rather than per frame. CSS transforms don't affect
+  // drawImage, which reads the raw decoded frame, so this is the only mirror
+  // that reaches the file.
+  ctx.translate(w, 0); ctx.scale(-1, 1);
+
+  let stopped = false, frames = 0, seen;
+  // Resolves on the first composed frame. If frames never arrive the canvas track
+  // stays empty and MediaRecorder happily produces a 0-byte file, so the caller
+  // waits for this before committing a take to the composed stream.
+  const firstFrame = new Promise(r => { seen = r; });
+  const draw = () => {
+    if (stopped) return;
+    ctx.drawImage(v, 0, 0, w, h);
+    if (++frames === 1) seen();
+    schedule();
+  };
+  // requestVideoFrameCallback fires once per decoded camera frame, so the canvas
+  // tracks the camera instead of the display. rAF is the fallback, and it stalls
+  // when the tab is hidden — which is survivable here because recording keeps
+  // the page in front.
+  const schedule = ("requestVideoFrameCallback" in v)
+    ? () => v.requestVideoFrameCallback(draw)
+    : () => requestAnimationFrame(draw);
+  schedule();
+
+  const out = canvas.captureStream(fps);
+  // Audio is untouched: reuse the camera's own track rather than re-encoding it.
+  for (const a of S.stream.getAudioTracks()) out.addTrack(a);
+
+  return {
+    stream: out, width: w, height: h, fps, firstFrame,
+    get frames(){ return frames; },
+    stop(){
+      stopped = true;
+      // Only the canvas's own video track — the audio belongs to the camera
+      // stream and stopping it would kill the mic for the next take.
+      out.getVideoTracks().forEach(t => t.stop());
+    },
+  };
+}
+
 /* ─────────────────────────── recording ───────────────────────── */
 // Prefer MP4 where Chrome offers it — far fewer downstream headaches than WebM.
 const CANDIDATES = [
@@ -1080,20 +1153,44 @@ async function startRec(){
   if (!S.stream){ return; }   // camera stopped during the countdown
 
   S.chunks = [];
+  // Only compose when there is actually something to flip: with the preview
+  // unmirrored the camera track already matches what you see.
+  let composer = (S.matchPreview && S.flip) ? startMirrorComposer() : null;
+  if (composer){
+    // Never record a canvas that isn't actually painting. Handing MediaRecorder a
+    // frameless track yields an empty file with no error at all, which you would
+    // only discover after the take. Fall back to the camera instead and say so.
+    const painting = await Promise.race([
+      composer.firstFrame.then(() => true),
+      new Promise(r => setTimeout(() => r(false), 1500)),
+    ]);
+    if (!painting){
+      composer.stop(); composer = null;
+      toast("Couldn't mirror the recording here — saving the camera's own view instead.", 4500);
+    }
+  }
+  if (!S.stream){ composer?.stop(); return; }   // camera stopped during that wait
+  const src = composer ? composer.stream : S.stream;
   try {
     // A flat bitrate starves 4K and wastes space at 480p; ~0.12 bits per pixel
     // per frame tracks quality across the range.
-    const st = S.stream.getVideoTracks()[0]?.getSettings() ?? {};
+    const st = composer ? composer : (S.stream.getVideoTracks()[0]?.getSettings() ?? {});
     const px = (st.width || 1920) * (st.height || 1080);
-    const rate = clamp(Math.round(px * (st.frameRate || 30) * 0.12), 2_000_000, 40_000_000);
-    S.recorder = new MediaRecorder(S.stream, { mimeType: mime, videoBitsPerSecond: rate });
-  } catch (e){ toast("Recorder failed: " + e.message); return; }
+    const rate = clamp(Math.round(px * (st.fps || st.frameRate || 30) * 0.12), 2_000_000, 40_000_000);
+    S.recorder = new MediaRecorder(src, { mimeType: mime, videoBitsPerSecond: rate });
+  } catch (e){
+    composer?.stop();
+    toast("Recorder failed: " + e.message); return;
+  }
 
   S.recorder.ondataavailable = e => { if (e.data.size) S.chunks.push(e.data); };
   // onstop fires asynchronously, by which time S.recStart may already belong to
   // the next take — so this take's start time is closed over, not read back.
   const startedAt = Date.now();
   S.recorder.onstop = () => {
+    // After the recorder has flushed, never before — pulling the canvas track
+    // out from under it mid-stop loses the tail of the take.
+    composer?.stop();
     const blob = new Blob(S.chunks, { type: mime });
     S.chunks = [];
     addTake(blob, mime, (Date.now() - startedAt) / 1000);
@@ -1338,6 +1435,12 @@ $("mirror").onclick = () => {
   S.mirror = !S.mirror;
   $("mirror").classList.toggle("on", S.mirror);
   measure(); savePrefs();
+};
+$("matchPreview").onclick = () => {
+  S.matchPreview = !S.matchPreview;
+  $("matchPreview").classList.toggle("on", S.matchPreview);
+  savePrefs();
+  toast(S.matchPreview ? "Takes will match your preview." : "Takes keep the camera's orientation.");
 };
 $("flip").onclick   = () => {
   S.flip = !S.flip; S.flipManual = true;      // from here on, don't second-guess them
