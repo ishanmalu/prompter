@@ -529,7 +529,7 @@ const S = {
   mirror:false, flip:true, flipManual:false, matchPreview:false, mode:"manual",
   playing:false, offset:0, target:0, max:0, lastTs:0,
   words:[], wordEls:[], cursor:0,
-  stream:null, recorder:null, chunks:[], recStart:0, recTimer:null, arming:false,
+  stream:null, recorder:null, composer:null, chunks:[], recStart:0, recTimer:null, arming:false,
   currentId:null, takeSeq:0, facing:"user", wake:null,
 };
 
@@ -934,7 +934,12 @@ async function startCam(){
     audio: {
       echoCancellation: false,   // we're recording, not conferencing
       noiseSuppression: false,
-      autoGainControl: false,
+      // Gain control stays ON. It is the one of the three that sets level, and
+      // every app you'd compare this to — Camera, Voice Memos — applies it, so
+      // turning it off made takes sound far quieter than the same phone
+      // normally records. Echo cancellation and noise suppression are the ones
+      // worth refusing: they're tuned for calls and chew up a spoken take.
+      autoGainControl: true,
       ...(aud ? { deviceId: { exact: aud } } : {}),
     },
   };
@@ -986,6 +991,7 @@ function showCamInfo(){
 
 function stopCam(){
   if (S.recorder && S.recorder.state !== "inactive") stopRec();
+  else { S.composer?.stop(); S.composer = null; }
   if (S.stream){ S.stream.getTracks().forEach(t => t.stop()); S.stream = null; }
   $("cam").srcObject = null;
   $("noCam").classList.remove("hide");
@@ -1136,6 +1142,7 @@ function startMirrorComposer(){
     stream: out, width: w, height: h, fps, firstFrame,
     get frames(){ return frames; },
     stop(){
+      if (stopped) return;          // safe to call from every teardown path
       stopped = true;
       clearInterval(watchdog);
       // Only the canvas's own video track — the audio belongs to the camera
@@ -1208,6 +1215,7 @@ async function startRec(){
     }
   }
   if (!S.stream){ composer?.stop(); return; }   // camera stopped during that wait
+  S.composer = composer;            // reachable from every teardown path, not just onstop
   const src = composer ? composer.stream : S.stream;
   try {
     // A flat bitrate starves 4K and wastes space at 480p; ~0.12 bits per pixel
@@ -1229,6 +1237,7 @@ async function startRec(){
     // After the recorder has flushed, never before — pulling the canvas track
     // out from under it mid-stop loses the tail of the take.
     composer?.stop();
+    if (S.composer === composer) S.composer = null;
     const blob = new Blob(S.chunks, { type: mime });
     S.chunks = [];
     addTake(blob, mime, (Date.now() - startedAt) / 1000);
@@ -1253,8 +1262,16 @@ async function startRec(){
 }
 
 function stopRec(){
-  if (S.recorder && S.recorder.state !== "inactive") S.recorder.stop();
+  const flushing = S.recorder && S.recorder.state !== "inactive";
+  if (flushing) S.recorder.stop();
   S.recorder = null;
+  // onstop is what normally stops the mirror composer, once the recorder has
+  // flushed. If it never fires — an error, or a recorder already inactive —
+  // nothing else would, and the canvas would go on redrawing a full frame
+  // thirty times a second for the rest of the session. That is why the app got
+  // slower after a take. stop() is idempotent, so both routes are safe.
+  if (!flushing){ S.composer?.stop(); S.composer = null; }
+  else setTimeout(() => { if (S.composer){ S.composer.stop(); S.composer = null; } }, 5000);
   clearInterval(S.recTimer);
   setBtn("rec", "●", "Record");
   $("recPill").style.display = "none";
